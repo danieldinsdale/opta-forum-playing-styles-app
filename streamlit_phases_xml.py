@@ -18,6 +18,7 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -736,14 +737,57 @@ def _render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map:
             plot_df[col] = ""
 
     if show_arrows and "endX" in plot_df.columns and "endY" in plot_df.columns:
-        for _, row in plot_df.iterrows():
-            if pd.notna(row.get("endX")) and pd.notna(row.get("endY")):
-                fig.add_annotation(
-                    x=row["endX"], y=row["endY"], ax=row["startX"], ay=row["startY"],
-                    xref="x", yref="y", axref="x", ayref="y",
-                    showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=1.5,
-                    arrowcolor=row["_colour"], opacity=1.0,
-                )
+        arr_df = plot_df.dropna(subset=["endX", "endY"])
+        if not arr_df.empty:
+            # Draw arrows as line segments + arrowhead markers grouped by colour,
+            # avoiding thousands of individual add_annotation calls.
+            arrow_colours = arr_df["_colour"].unique()
+            for colour in arrow_colours:
+                grp_a = arr_df[arr_df["_colour"] == colour]
+                sx = grp_a["startX"].values
+                ex = grp_a["endX"].values
+                sy = grp_a["startY"].values
+                ey = grp_a["endY"].values
+                # Interleave start→end→None for disconnected line segments
+                xs = np.empty(len(sx) * 3, dtype=object)
+                xs[0::3] = sx
+                xs[1::3] = ex
+                xs[2::3] = None
+                ys = np.empty(len(sy) * 3, dtype=object)
+                ys[0::3] = sy
+                ys[1::3] = ey
+                ys[2::3] = None
+                fig.add_trace(go.Scatter(
+                    x=xs.tolist(), y=ys.tolist(),
+                    mode="lines",
+                    line={"color": colour, "width": 1.5},
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
+                # Arrowhead markers: interleave start (size=0, invisible) then end
+                # (size=10, visible arrow) so "angleref": "previous" computes the
+                # correct angle from start→end for every arrowhead.
+                mx = np.empty(len(sx) * 2, dtype=object)
+                mx[0::2] = sx
+                mx[1::2] = ex
+                my = np.empty(len(sy) * 2, dtype=object)
+                my[0::2] = sy
+                my[1::2] = ey
+                msizes = np.tile([0, 10], len(sx))
+                msymbols = np.tile(["circle", "arrow"], len(sx))
+                fig.add_trace(go.Scatter(
+                    x=mx.tolist(), y=my.tolist(),
+                    mode="markers",
+                    marker={
+                        "symbol": msymbols.tolist(),
+                        "color": colour,
+                        "size": msizes.tolist(),
+                        "angleref": "previous",
+                        "line": {"width": 0},
+                    },
+                    hoverinfo="skip",
+                    showlegend=False,
+                ))
 
     groups = plot_df.groupby("team_name") if colour_by_team else [("Runs", plot_df)]
     for label, grp in groups:
@@ -756,17 +800,17 @@ def _render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map:
         ))
 
     fig.update_layout(
-        width=1040, height=693, plot_bgcolor="white", paper_bgcolor="white",
-        margin={"l": 10, "r": 10, "t": 35, "b": 10},
+        height=700, plot_bgcolor="white", paper_bgcolor="white",
+        margin={"l": 10, "r": 10, "t": 60, "b": 10},
         xaxis={"range": [-4, 104], "showgrid": False, "zeroline": False, "showticklabels": False, "scaleanchor": "y", "scaleratio": 105 / 68},
-        yaxis={"range": [-4, 68], "showgrid": False, "zeroline": False, "showticklabels": False},
+        yaxis={"range": [-4, 104], "showgrid": False, "zeroline": False, "showticklabels": False},
         showlegend=colour_by_team,
         legend={"x": 0.01, "y": 0.99, "bgcolor": "rgba(255,255,255,0.7)"},
         title={"text": f"{len(plot_df)} run(s) plotted", "font": {"size": 13, "color": "#333333"}, "x": 0.5},
         hoverlabel={"bgcolor": "#ffffff", "bordercolor": "#333333", "font": {"size": 12, "color": "#000000"}, "align": "left", "namelength": 0},
         hovermode="closest",
     )
-    st.plotly_chart(fig, use_container_width=False, key="runs_pitch_map")
+    st.plotly_chart(fig, use_container_width=True, key="runs_pitch_map")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -824,7 +868,210 @@ def _pitch_zone_selector(key_prefix: str, has_start: bool = True, has_end: bool 
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, match_info: dict, squad_map: dict[str, str] | None = None):
+@st.cache_data(show_spinner="Searching runs…")
+def _compute_runs_result(
+    phases_df: pd.DataFrame,
+    runs_df: pd.DataFrame,
+    contestant_map: dict,
+    available_labels: tuple,
+    selected_labels: tuple,
+    includes_shots_choice: str,
+    includes_goal_choice: str,
+    selected_run_labels: tuple,
+    run_type_choice: str,
+    dlb_choice: str,
+    dangerous_choice: str,
+    et_lo: float,
+    et_hi: float,
+    run_coord_bounds: tuple | None,
+    selected_team_name: str,
+    selected_player_name: str,
+    squad_map: tuple,
+) -> pd.DataFrame:
+    """Heavy phase↔run interval join + all filters. Cached so that changing
+    display-only widgets (view mode, top-N, etc.) does not re-trigger work."""
+
+    # Reconstruct mutable types from hashable args
+    squad_map_dict: dict = dict(squad_map)
+    coord_bounds: dict | None = dict(run_coord_bounds) if run_coord_bounds is not None else None
+    et_col = "expectedThreat_max"
+    _et_same = (
+        not (et_col in runs_df.columns and runs_df[et_col].notna().any())
+        or runs_df[et_col].min(skipna=True) == runs_df[et_col].max(skipna=True)
+    )
+
+    # ── Apply Phase Criteria ──────────────────────────────────────────────
+    _phase_label_filter = list(selected_labels) if selected_labels else list(available_labels)
+    filtered_phases = phases_df[phases_df["phaseLabel"].isin(_phase_label_filter)].copy()
+    if includes_shots_choice != "Any" and "includesShots" in filtered_phases.columns:
+        filtered_phases = filtered_phases[filtered_phases["includesShots"] == includes_shots_choice]
+    if includes_goal_choice != "Any" and "includesGoal" in filtered_phases.columns:
+        filtered_phases = filtered_phases[filtered_phases["includesGoal"] == includes_goal_choice]
+    if filtered_phases.empty:
+        return pd.DataFrame()
+
+    # ── Vectorised phase ↔ run interval join ──────────────────────────────
+    ph = filtered_phases.copy()
+    ph["_gid"]    = ph["game_id"].astype(str) if "game_id" in ph.columns else ""
+    ph["_pid"]    = ph["phase_id"].astype(str)
+    ph["_period"] = ph["periodId"].astype(str)
+    ph["_team"]   = ph["possessionContestantId"].astype(str)
+    ph["_psf"]    = ph["startFrame"].astype(int)
+    ph["_pef"]    = ph["endFrame"].astype(int)
+    ph_cols = ["_gid", "_pid", "_period", "_team", "_psf", "_pef",
+               "phaseLabel", "includesShots", "includesGoal", "startTime"]
+    ph_cols = [c for c in ph_cols if c in ph.columns]
+    ph_slim = ph[ph_cols].copy()
+    for _c in ("includesShots", "includesGoal", "startTime"):
+        if _c not in ph_slim.columns:
+            ph_slim[_c] = ""
+
+    ru = runs_df.copy()
+    ru["_gid"]    = ru["game_id"].astype(str) if "game_id" in ru.columns else ""
+    ru["_period"] = ru["periodId"].astype(str)
+    ru["_team"]   = ru["contestantId"].astype(str)
+    ru["_rsf"]    = ru["startFrame"]
+    ru["_ref"]    = ru["endFrame"]
+    ru = ru.dropna(subset=["_rsf", "_ref"])
+    ru["_rsf"]    = ru["_rsf"].astype(int)
+    ru["_ref"]    = ru["_ref"].astype(int)
+    ru["_crid"]   = ru["composite_run_id"] if "composite_run_id" in ru.columns else ru["run_id"]
+
+    run_keep_cols = ["_gid", "_period", "_team", "_rsf", "_ref", "_crid",
+                     "run_id", "game_id", "periodId", "playerId", "contestantId",
+                     "masterLabel", "runType", "defensiveLineBroken",
+                     "dangerous", "expectedThreat_max",
+                     "startX", "startY", "endX", "endY"]
+    run_keep_cols = [c for c in run_keep_cols if c in ru.columns]
+    ru_slim = ru[run_keep_cols].copy()
+
+    # Split by runType: inPossession joins on team; outOfPossession joins on opposite team
+    if "runType" in ru_slim.columns:
+        ru_inp   = ru_slim[ru_slim["runType"] == "inPossession"].copy()
+        ru_oop   = ru_slim[ru_slim["runType"] == "outOfPossession"].copy()
+        ru_other = ru_slim[~ru_slim["runType"].isin(["inPossession", "outOfPossession"])].copy()
+    else:
+        ru_inp   = ru_slim.copy()
+        ru_oop   = pd.DataFrame(columns=ru_slim.columns)
+        ru_other = pd.DataFrame(columns=ru_slim.columns)
+
+    merged_inp = ru_inp.merge(
+        ph_slim,
+        left_on=["_gid", "_period", "_team"],
+        right_on=["_gid", "_period", "_team"],
+        how="inner",
+    )
+
+    if not ru_oop.empty:
+        merged_oop = ru_oop.merge(
+            ph_slim.rename(columns={"_team": "_ph_team"}),
+            left_on=["_gid", "_period"],
+            right_on=["_gid", "_period"],
+            how="inner",
+        )
+        merged_oop = merged_oop[merged_oop["_team"] != merged_oop["_ph_team"]]
+        merged_oop = merged_oop.drop(columns=["_ph_team"], errors="ignore")
+    else:
+        merged_oop = pd.DataFrame(columns=merged_inp.columns if not merged_inp.empty else [])
+
+    if not ru_other.empty:
+        merged_other = ru_other.merge(
+            ph_slim,
+            left_on=["_gid", "_period", "_team"],
+            right_on=["_gid", "_period", "_team"],
+            how="inner",
+        )
+    else:
+        merged_other = pd.DataFrame(columns=merged_inp.columns if not merged_inp.empty else [])
+
+    merged = pd.concat([merged_inp, merged_oop, merged_other], ignore_index=True)
+
+    if not merged.empty:
+        overlap = (merged["_rsf"] < merged["_pef"]) & (merged["_ref"] > merged["_psf"])
+        merged = merged[overlap]
+
+    result_df = merged.rename(columns={
+        "_crid":  "composite_run_id",
+        "_pid":   "phase_id",
+        "_rsf":   "run_startFrame",
+        "_ref":   "run_endFrame",
+    }).drop(columns=["_gid", "_period", "_team", "_psf", "_pef"], errors="ignore")
+
+    for _id_col in ("run_id", "phase_id"):
+        if _id_col in result_df.columns:
+            result_df[_id_col] = pd.to_numeric(result_df[_id_col], errors="coerce").astype("Int64")
+
+    if result_df.empty:
+        return result_df
+
+    if contestant_map and "contestantId" in result_df.columns:
+        result_df["team_name"] = result_df["contestantId"].map(contestant_map)
+
+    # ── Apply Run Criteria ────────────────────────────────────────────────
+    has_et = et_col in result_df.columns and result_df[et_col].notna().any()
+    if selected_run_labels:
+        result_df = result_df[result_df["masterLabel"].isin(selected_run_labels)]
+    if run_type_choice != "Any":
+        result_df = result_df[result_df["runType"] == run_type_choice]
+    if dlb_choice == "Yes":
+        result_df = result_df[result_df["defensiveLineBroken"] == 1.0]
+    elif dlb_choice == "No":
+        result_df = result_df[result_df["defensiveLineBroken"] == 0.0]
+    if dangerous_choice == "Yes":
+        result_df = result_df[result_df["dangerous"] == 1.0]
+    elif dangerous_choice == "No":
+        result_df = result_df[result_df["dangerous"] == 0.0]
+    if has_et and not _et_same:
+        result_df = result_df[result_df[et_col].isna() | ((result_df[et_col] >= et_lo) & (result_df[et_col] <= et_hi))]
+
+    # ── Apply Run Coordinates filter ──────────────────────────────────────
+    if coord_bounds:
+        for coord, b_min, b_max in [
+            ("startX", coord_bounds["start_x_min"], coord_bounds["start_x_max"]),
+            ("startY", coord_bounds["start_y_min"], coord_bounds["start_y_max"]),
+            ("endX",   coord_bounds.get("end_x_min", 0),   coord_bounds.get("end_x_max", 100)),
+            ("endY",   coord_bounds.get("end_y_min", 0),   coord_bounds.get("end_y_max", 100)),
+        ]:
+            if coord in result_df.columns and (b_min != 0 or b_max != 100):
+                result_df = result_df[result_df[coord].notna() & (result_df[coord] >= b_min) & (result_df[coord] <= b_max)]
+
+    # ── Apply Team / Player filter ────────────────────────────────────────
+    if selected_team_name != "All teams":
+        _cid_by_name = {contestant_map.get(str(c), str(c)): str(c) for c in (result_df["contestantId"].dropna().unique() if "contestantId" in result_df.columns else [])}
+        selected_cid = _cid_by_name.get(selected_team_name, "")
+        result_df = result_df[result_df["contestantId"] == selected_cid]
+        if selected_player_name != "All players":
+            if squad_map_dict:
+                matching_pids = {
+                    pid for pid in result_df["playerId"].dropna().unique()
+                    if squad_map_dict.get(str(pid), str(pid)) == selected_player_name
+                }
+            else:
+                matching_pids = {selected_player_name}
+            result_df = result_df[result_df["playerId"].isin(matching_pids)]
+
+    # ── Consolidate: each unique run counted once, phase labels joined ────
+    if not result_df.empty:
+        phase_cols_set = {"phase_id", "phaseLabel", "startTime", "includesShots", "includesGoal"}
+
+        def _join_unique(x):
+            return ", ".join(sorted({str(v) for v in x if pd.notna(v) and str(v) != "nan"}))
+
+        agg_rules = {c: (_join_unique if c in phase_cols_set else "first")
+                     for c in result_df.columns if c != "composite_run_id"}
+        result_df = result_df.groupby("composite_run_id", as_index=False).agg(agg_rules)
+        if contestant_map and "contestantId" in result_df.columns:
+            result_df["team_name"] = result_df["contestantId"].map(contestant_map)
+
+    if squad_map_dict and "playerId" in result_df.columns:
+        result_df["player_name"] = result_df["playerId"].map(
+            lambda x: squad_map_dict.get(str(x), str(x)) if pd.notna(x) else ""
+        )
+
+    return result_df
+
+
+def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, match_info: dict, squad_map: dict | None = None):
     """List all runs that occur during phases matching phaseSummary and run-level criteria."""
     if squad_map is None:
         squad_map = {}
@@ -854,11 +1101,13 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
     else:
         _et_min_src = _et_max_src = 0.0
         _et_same = True
+    _et_input_min = min(_et_min_src, 0.0)
+    _et_input_max = max(_et_max_src, 1.0)
 
     # ── Filters expander (tabs inside — nested expanders not supported) ───
     with st.expander("🔍 Filters", expanded=True):
-        ftab_phase, ftab_run, ftab_coords, ftab_team = st.tabs(
-            ["📋 Phase Criteria", "🏃 Run Criteria", "📍 Run Coordinates", "👥 Team / Player"]
+        ftab_run, ftab_phase, ftab_coords, ftab_team = st.tabs(
+            ["🏃 Run Criteria", "📋 Phase Criteria", "📍 Run Coordinates", "👥 Team / Player"]
         )
 
         with ftab_phase:
@@ -871,7 +1120,7 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
                 with btn_col2:
                     if st.button("Clear", key="rp_clear"):
                         st.session_state["run_phase_labels"] = []
-                selected_labels = st.multiselect("Phase labels", available_labels, default=[], key="run_phase_labels")
+                selected_labels = st.multiselect("Phase labels", available_labels, default=available_labels, key="run_phase_labels")
                 includes_shots_choice = st.radio("**Includes shots**", ["Any", "True", "False"], horizontal=True, key="rp_includes_shots")
             with ph_col2:
                 includes_goal_choice = st.radio("**Includes goal**", ["Any", "True", "False"], horizontal=True, key="rp_includes_goal")
@@ -879,7 +1128,7 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         with ftab_run:
             r_col1, r_col2 = st.columns(2)
             with r_col1:
-                selected_run_labels = st.multiselect("Master label", _all_run_master_labels, default=[], key="run_master_labels")
+                selected_run_labels = st.multiselect("Master label", _all_run_master_labels, default=_all_run_master_labels, key="run_master_labels")
                 run_type_choice = st.radio("**Run type**", ["Any", "inPossession", "outOfPossession"], horizontal=True, key="run_type_filter")
                 dlb_choice = st.radio("**Defensive line broken**", ["Any", "Yes", "No"], horizontal=True, key="run_dlb")
             with r_col2:
@@ -888,9 +1137,9 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
                     st.markdown("**Max Expected Threat**")
                     c1, c2 = st.columns(2)
                     with c1:
-                        et_lo = st.number_input("Min expected threat", min_value=_et_min_src, max_value=_et_max_src, value=_et_min_src, format="%.4f", key="run_et_min")
+                        et_lo = st.number_input("Min expected threat", min_value=_et_input_min, max_value=_et_input_max, value=0.0, format="%.4f", key="run_et_min")
                     with c2:
-                        et_hi = st.number_input("Max expected threat", min_value=_et_min_src, max_value=_et_max_src, value=_et_max_src, format="%.4f", key="run_et_max")
+                        et_hi = st.number_input("Max expected threat", min_value=_et_input_min, max_value=_et_input_max, value=1.0, format="%.4f", key="run_et_max")
                 else:
                     et_lo = _et_min_src
                     et_hi = _et_max_src
@@ -950,168 +1199,38 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         st.info("Set your filters above and click **▶ Generate Outputs** to run the analysis.")
         return
 
-    # Unpack committed filter values
-    selected_labels      = committed["selected_labels"]
-    includes_shots_choice = committed["includes_shots"]
-    includes_goal_choice  = committed["includes_goal"]
-    selected_run_labels  = committed["selected_run_labels"]
-    run_type_choice      = committed["run_type_choice"]
-    dlb_choice           = committed["dlb_choice"]
-    dangerous_choice     = committed["dangerous_choice"]
-    et_lo                = committed["et_lo"]
-    et_hi                = committed["et_hi"]
-    run_coord_bounds     = committed["run_coord_bounds"]
-    selected_team_name   = committed["selected_team_name"]
-    selected_player_name = committed["selected_player_name"]
+    # ── Call cached computation ───────────────────────────────────────────
+    # Convert mutable types to hashable equivalents for the cache key
+    _coord_bounds_hashable = tuple(sorted(committed["run_coord_bounds"].items())) if committed["run_coord_bounds"] else None
+    result_df = _compute_runs_result(
+        phases_df=phases_df,
+        runs_df=runs_df,
+        contestant_map=_run_cmap,
+        available_labels=tuple(available_labels),
+        selected_labels=tuple(committed["selected_labels"]),
+        includes_shots_choice=committed["includes_shots"],
+        includes_goal_choice=committed["includes_goal"],
+        selected_run_labels=tuple(committed["selected_run_labels"]),
+        run_type_choice=committed["run_type_choice"],
+        dlb_choice=committed["dlb_choice"],
+        dangerous_choice=committed["dangerous_choice"],
+        et_lo=float(committed["et_lo"]),
+        et_hi=float(committed["et_hi"]),
+        run_coord_bounds=_coord_bounds_hashable,
+        selected_team_name=committed["selected_team_name"],
+        selected_player_name=committed["selected_player_name"],
+        squad_map=tuple(sorted(squad_map.items())),
+    )
 
-    # ── Guard: must have at least one phase label selected ────────────────
-    if not selected_labels:
-        st.info("Select at least one phase label in Phase Criteria to see matching runs.")
-        return
-
-    # ── Apply Phase Criteria ──────────────────────────────────────────────
-    filtered_phases = phases_df[phases_df["phaseLabel"].isin(selected_labels)].copy()
-    if includes_shots_choice != "Any" and "includesShots" in filtered_phases.columns:
-        filtered_phases = filtered_phases[filtered_phases["includesShots"] == includes_shots_choice]
-    if includes_goal_choice != "Any" and "includesGoal" in filtered_phases.columns:
-        filtered_phases = filtered_phases[filtered_phases["includesGoal"] == includes_goal_choice]
-
-    if filtered_phases.empty:
-        st.warning("No phases match the selected phase criteria.")
-        return
-
-    # phase_lookup keyed by (game_id, phase_id) to avoid collisions across games
-    phase_lookup: dict[tuple[str, str], dict] = {}
-    for _, p in filtered_phases.iterrows():
-        gid = str(p.get("game_id", ""))
-        pid = str(p["phase_id"])
-        phase_lookup[(gid, pid)] = {
-            "phaseLabel": str(p["phaseLabel"]),
-            "includesShots": p.get("includesShots", ""),
-            "includesGoal": p.get("includesGoal", ""),
-            "startTime": p.get("startTime", ""),
-        }
-
-    intervals: dict[tuple[str, str], list[tuple[int, int, str, str, str]]] = {}
-    for (gid, pid) in phase_lookup:
-        mask = (filtered_phases["phase_id"].astype(str) == pid)
-        if "game_id" in filtered_phases.columns:
-            mask = mask & (filtered_phases["game_id"].astype(str) == gid)
-        row = filtered_phases[mask].iloc[0]
-        game_id_p = str(row.get("game_id", ""))
-        period    = str(row["periodId"])
-        p_team    = str(row.get("possessionContestantId", ""))
-        intervals.setdefault((game_id_p, period), []).append(
-            (int(row["startFrame"]), int(row["endFrame"]), gid, pid, p_team)
-        )
-
-    matched_rows: list[dict] = []
-    for _, r in runs_df.iterrows():
-        period    = str(r.get("periodId", ""))
-        game_id_r = str(r.get("game_id", ""))
-        r_sf      = r.get("startFrame")
-        r_ef      = r.get("endFrame")
-        r_team    = str(r.get("contestantId", ""))
-        key       = (game_id_r, period)
-        if key not in intervals or r_sf is None or r_ef is None:
-            continue
-        for p_sf, p_ef, p_gid, p_pid, p_team in intervals[key]:
-            if r_sf < p_ef and r_ef > p_sf and r_team == p_team:
-                ph = phase_lookup[(p_gid, p_pid)]
-                matched_rows.append({
-                    "composite_run_id": r.get("composite_run_id", r["run_id"]),
-                    "run_id": r["run_id"], "phase_id": p_pid,
-                    "game_id": r.get("game_id", ""),
-                    "phaseLabel": ph["phaseLabel"], "includesShots": ph["includesShots"],
-                    "includesGoal": ph["includesGoal"], "startTime": ph["startTime"],
-                    "periodId": period, "playerId": r.get("playerId", ""),
-                    "contestantId": r.get("contestantId", ""), "masterLabel": r.get("masterLabel", ""),
-                    "runType": r.get("runType", ""),
-                    "defensiveLineBroken": r.get("defensiveLineBroken", float("nan")),
-                    "dangerous": r.get("dangerous", float("nan")),
-                    "expectedThreat_max": r.get("expectedThreat_max", float("nan")),
-                    "run_startFrame": r_sf, "run_endFrame": r_ef,
-                    "startX": r.get("startX"), "startY": r.get("startY"),
-                    "endX": r.get("endX"), "endY": r.get("endY"),
-                })
-
-    result_df = pd.DataFrame(matched_rows)
     if result_df.empty:
-        st.warning("No runs found overlapping with the selected phase criteria.")
+        # Distinguish between "no phases matched" (columns absent) and "no runs found"
+        if len(result_df.columns) == 0:
+            st.warning("No phases match the selected phase criteria.")
+        else:
+            st.warning("No runs found overlapping with the selected phase criteria.")
         return
 
-    cmap = match_info.get("contestant_map", {})
-    if cmap and "contestantId" in result_df.columns:
-        result_df["team_name"] = result_df["contestantId"].map(cmap)
-
-    # ── Apply Run Criteria ────────────────────────────────────────────────
-    has_et = et_col in result_df.columns and result_df[et_col].notna().any()
-    if selected_run_labels:
-        result_df = result_df[result_df["masterLabel"].isin(selected_run_labels)]
-    if run_type_choice != "Any":
-        result_df = result_df[result_df["runType"] == run_type_choice]
-    if dlb_choice == "Yes":
-        result_df = result_df[result_df["defensiveLineBroken"] == 1.0]
-    elif dlb_choice == "No":
-        result_df = result_df[result_df["defensiveLineBroken"] == 0.0]
-    if dangerous_choice == "Yes":
-        result_df = result_df[result_df["dangerous"] == 1.0]
-    elif dangerous_choice == "No":
-        result_df = result_df[result_df["dangerous"] == 0.0]
-    if has_et and not _et_same:
-        result_df = result_df[result_df[et_col].isna() | ((result_df[et_col] >= et_lo) & (result_df[et_col] <= et_hi))]
-
-    # ── Apply Run Coordinates filter ──────────────────────────────────────
-    if run_coord_bounds:
-        for coord, b_min, b_max in [
-            ("startX", run_coord_bounds["start_x_min"], run_coord_bounds["start_x_max"]),
-            ("startY", run_coord_bounds["start_y_min"], run_coord_bounds["start_y_max"]),
-            ("endX",   run_coord_bounds.get("end_x_min", 0),   run_coord_bounds.get("end_x_max", 100)),
-            ("endY",   run_coord_bounds.get("end_y_min", 0),   run_coord_bounds.get("end_y_max", 100)),
-        ]:
-            if coord in result_df.columns and (b_min != 0 or b_max != 100):
-                result_df = result_df[result_df[coord].notna() & (result_df[coord] >= b_min) & (result_df[coord] <= b_max)]
-
-    # ── Apply Team / Player filter ────────────────────────────────────────
-    if selected_team_name != "All teams":
-        selected_cid = _run_cid_by_name.get(selected_team_name, "")
-        result_df = result_df[result_df["contestantId"] == selected_cid]
-        if selected_player_name != "All players":
-            if squad_map:
-                matching_pids = {
-                    pid for pid in result_df["playerId"].dropna().unique()
-                    if squad_map.get(str(pid), str(pid)) == selected_player_name
-                }
-            else:
-                matching_pids = {selected_player_name}
-            result_df = result_df[result_df["playerId"].isin(matching_pids)]
-
-    # Consolidate: each unique run (across all games) counted once, phase labels joined.
-    # ...existing code...
-    unique_phases_count = 0
-    if not result_df.empty:
-        unique_phases_count = result_df["phase_id"].nunique()
-        phase_cols_set = {"phase_id", "phaseLabel", "startTime", "includesShots", "includesGoal"}
-        def _join_unique(x):
-            return ", ".join(sorted({str(v) for v in x if pd.notna(v) and str(v) != "nan"}))
-
-        agg_rules = {}
-        for c in result_df.columns:
-            if c == "composite_run_id":
-                continue
-            if c in phase_cols_set:
-                agg_rules[c] = _join_unique
-            else:
-                agg_rules[c] = "first"
-        result_df = result_df.groupby("composite_run_id", as_index=False).agg(agg_rules)
-        # Re-map team_name from contestantId after dedup to ensure it is always populated
-        cmap_dedup = match_info.get("contestant_map", {})
-        if cmap_dedup and "contestantId" in result_df.columns:
-            result_df["team_name"] = result_df["contestantId"].map(cmap_dedup)
-
-    # Add player name to result_df
-    if squad_map and "playerId" in result_df.columns:
-        result_df["player_name"] = result_df["playerId"].map(lambda x: squad_map.get(str(x), str(x)) if pd.notna(x) else "")
+    unique_phases_count = result_df["phase_id"].nunique() if "phase_id" in result_df.columns else 0
 
     st.markdown("---")
     st.markdown(f"**{len(result_df)}** unique run(s) found across **{unique_phases_count}** matching phase(s).")
@@ -1123,7 +1242,7 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         group_by = st.radio("**Aggregate by**", ["Team", "Player"], horizontal=True, key="run_group_by", disabled=(view_mode != "Aggregated"))
 
     if view_mode == "Individual runs":
-        display_cols = ["game_id", "run_id", "phase_id", "phaseLabel", "periodId"]
+        display_cols = ["game_id", "run_id", "phase_id", "masterLabel", "phaseLabel"]
         if "team_name" in result_df.columns:
             display_cols.append("team_name")
         if "player_name" in result_df.columns:
@@ -1140,9 +1259,8 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         if group_by == "Team":
             group_cols = ["team_name"] if "team_name" in result_df.columns else ["contestantId"]
             label_col = group_cols[0]
-            id_col = None  # no ID→name remapping needed for teams
+            id_col = None
         else:
-            # Group by playerId on the backend; rename to player_name for display
             group_cols = ["playerId", "team_name"] if "team_name" in result_df.columns else ["playerId"]
             label_col = "playerId"
             id_col = "playerId"
@@ -1155,7 +1273,6 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         )
         agg_df = agg_df[agg_df[label_col].notna() & (agg_df[label_col].astype(str).str.strip() != "") & (agg_df[label_col].astype(str) != "None")]
 
-        # Map player IDs to names for display (keep ID column for the backend)
         if id_col and squad_map:
             agg_df["_display_label"] = agg_df[id_col].map(lambda x: squad_map.get(str(x), str(x)) if pd.notna(x) else str(x))
             display_label_col = "_display_label"
