@@ -605,11 +605,12 @@ def _opta_pitch_shapes() -> list[dict]:
 
 
 def _get_vod_api_key() -> str:
-    """Return the VOD API key from env var, Streamlit secrets, or sidebar fallback."""
+    """Return the VOD API key from env var, Streamlit secrets, or sidebar input.
+    Never logs or echoes the value."""
     return (
         os.environ.get("VOD_API_KEY", "")
         or st.secrets.get("VOD_API_KEY", "")
-        or st.session_state.get("vod_api_key", "")
+        or st.session_state.get("_vod_k", "")
     )
 
 
@@ -667,8 +668,18 @@ def get_vod_streaming(game_uuid: str, period: int, time_in: int, time_out: int,
         "Content-Type": "application/json-patch+json",
     }
 
-    res = requests.post(base_url, data=json.dumps(payload), headers=headers, timeout=15)
-    res.raise_for_status()
+    try:
+        res = requests.post(base_url, data=json.dumps(payload), headers=headers, timeout=15)
+        res.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        # Re-raise with only the status code/reason — strip the URL from the message
+        raise requests.exceptions.HTTPError(
+            f"{exc.response.status_code} {exc.response.reason}",
+            response=exc.response,
+        ) from None
+    except requests.exceptions.RequestException as exc:
+        # Strip any URL/connection details from network-level errors
+        raise requests.exceptions.RequestException(type(exc).__name__) from None
 
     url = json.loads(res.text)[0].get("http", "").encode("ascii", "ignore").decode()
     if not url:
@@ -1667,11 +1678,15 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
                                 height=620,
                             )
                         except requests.exceptions.HTTPError as exc:
+                            # Only show status code/reason
                             st.error(f"VOD API request failed: {exc.response.status_code} {exc.response.reason}")
+                        except requests.exceptions.RequestException:
+                            # Network-level errors (timeout, connection refused, etc.)
+                            st.error("Network error fetching video clip. Please try again.")
                         except (ValueError, KeyError, IndexError) as exc:
                             st.error(f"Could not retrieve video: {exc}")
-                        except Exception as exc:
-                            st.error(f"Unexpected error fetching video: {exc}")
+                        except Exception:
+                            st.error("Unexpected error fetching video. Please try again.")
 
     with tab_agg:
         team_col = "team_name" if "team_name" in filtered.columns else "possessionContestantId"
@@ -2359,7 +2374,7 @@ def main():
             st.text_input(
                 "🔑 VOD API Key",
                 type="password",
-                key="vod_api_key",
+                key="_vod_k",
                 help="Required for video playback. Set the VOD_API_KEY environment variable or Streamlit secret to avoid entering it here.",
             )
 
