@@ -831,46 +831,145 @@ def _render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map:
 
 
 def _pitch_zone_selector(key_prefix: str, has_start: bool = True, has_end: bool = True) -> dict:
-    """Render a Plotly pitch with sliders for start and/or end zones."""
-    bounds: dict = {}
-    slider_col, pitch_col = st.columns([1, 2])
+    """Render start/end zone sliders side-by-side, with the pitch preview below.
 
-    with slider_col:
+    Sliders and returned bounds all use the 0–100 Opta coordinate space.
+    """
+    bounds: dict = {}
+
+    # ── Sliders: start (left col) and end (right col) ─────────────────────
+    start_col, end_col = st.columns(2)
+
+    with start_col:
         if has_start:
-            st.markdown("**🔵 Start zone**")
+            st.markdown(
+                f'<p style="font-weight:700;margin-bottom:4px;">'
+                f'<span style="color:{_BRAND_PURPLE};">&#9632;</span> Start zone</p>',
+                unsafe_allow_html=True,
+            )
             if st.button("Reset start zone", key=f"{key_prefix}_sx_reset"):
                 st.session_state[f"{key_prefix}_sx"] = (0, 100)
                 st.session_state[f"{key_prefix}_sy"] = (0, 100)
             sx_range = st.slider("Start X", 0, 100, (0, 100), key=f"{key_prefix}_sx")
             sy_range = st.slider("Start Y", 0, 100, (0, 100), key=f"{key_prefix}_sy")
-            bounds.update(start_x_min=sx_range[0], start_x_max=sx_range[1], start_y_min=sy_range[0], start_y_max=sy_range[1])
+            bounds.update(
+                start_x_min=float(sx_range[0]), start_x_max=float(sx_range[1]),
+                start_y_min=float(sy_range[0]), start_y_max=float(sy_range[1]),
+            )
+        else:
+            bounds.update(start_x_min=0.0, start_x_max=100.0, start_y_min=0.0, start_y_max=100.0)
+
+    with end_col:
         if has_end:
-            st.markdown("**🔴 End zone**")
+            st.markdown(
+                f'<p style="font-weight:700;margin-bottom:4px;">'
+                f'<span style="color:{_BRAND_ORANGE};">&#9632;</span> End zone</p>',
+                unsafe_allow_html=True,
+            )
             if st.button("Reset end zone", key=f"{key_prefix}_ex_reset"):
                 st.session_state[f"{key_prefix}_ex"] = (0, 100)
                 st.session_state[f"{key_prefix}_ey"] = (0, 100)
             ex_range = st.slider("End X", 0, 100, (0, 100), key=f"{key_prefix}_ex")
             ey_range = st.slider("End Y", 0, 100, (0, 100), key=f"{key_prefix}_ey")
-            bounds.update(end_x_min=ex_range[0], end_x_max=ex_range[1], end_y_min=ey_range[0], end_y_max=ey_range[1])
+            bounds.update(
+                end_x_min=float(ex_range[0]), end_x_max=float(ex_range[1]),
+                end_y_min=float(ey_range[0]), end_y_max=float(ey_range[1]),
+            )
 
-    with pitch_col:
-        fig = go.Figure()
-        for shape in _opta_pitch_shapes():
-            fig.add_shape(**shape)
-        if has_start:
-            fig.add_shape(type="rect", x0=sx_range[0], y0=sy_range[0], x1=sx_range[1], y1=sy_range[1],
-                          xref="x", yref="y", fillcolor="rgba(30,120,255,0.18)", line={"color": "#1e78ff", "width": 2})
-        if has_end:
-            fig.add_shape(type="rect", x0=ex_range[0], y0=ey_range[0], x1=ex_range[1], y1=ey_range[1],
-                          xref="x", yref="y", fillcolor="rgba(220,50,30,0.18)", line={"color": "#dc321e", "width": 2})
-        fig.update_layout(
-            height=260, plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
-            margin={"l": 2, "r": 2, "t": 2, "b": 2},
-            xaxis={"range": [-2, 102], "showgrid": False, "zeroline": False, "showticklabels": False, "scaleanchor": "y", "scaleratio": 105 / 68},
-            yaxis={"range": [-2, 102], "showgrid": False, "zeroline": False, "showticklabels": False},
-            showlegend=False,
+    # JS to re-colour end-zone slider thumbs and filled track to brand orange.
+    # Runs once after Streamlit renders the widgets; uses a MutationObserver
+    # fallback so it catches late-rendering elements too.
+    if has_end:
+        _oc = _BRAND_ORANGE
+        components.html(
+            f"""<script>
+(function() {{
+  var OC = "{_oc}";
+  var doc = window.parent.document;
+
+  // Inject a persistent <style> into the parent doc so it survives re-renders.
+  // Uses a data-attribute we stamp onto End sliders to scope the override.
+  var styleId = "end-slider-orange-{key_prefix}";
+  if (!doc.getElementById(styleId)) {{
+    var s = doc.createElement("style");
+    s.id = styleId;
+    s.textContent =
+      '[data-end-slider="true"] [role="slider"] {{' +
+      '  background-color: ' + OC + ' !important;' +
+      '  border-color: ' + OC + ' !important;' +
+      '}}' +
+      '[data-end-slider="true"] [data-baseweb="slider"] > div > div > div {{' +
+      '  background-color: ' + OC + ' !important;' +
+      '}}' +
+      '[data-end-slider="true"] [data-testid="stTickBarMin"],' +
+      '[data-end-slider="true"] [data-testid="stTickBarMax"],' +
+      '[data-end-slider="true"] [data-testid="stTickBar"],' +
+      '[data-end-slider="true"] [data-testid="stTickBar"] div {{' +
+      '  color: ' + OC + ' !important;' +
+      '}}';
+    doc.head.appendChild(s);
+  }}
+
+  // The purple primaryColor as computed RGB
+  var PURPLE = 'rgb(158, 7, 174)';
+
+  function markEndSliders() {{
+    var sliders = doc.querySelectorAll('[data-testid="stSlider"]');
+    sliders.forEach(function(sl) {{
+      var lbl = sl.querySelector('[data-testid="stWidgetLabel"] p');
+      if (!lbl) return;
+      var txt = lbl.textContent.trim();
+      if (txt === 'End X' || txt === 'End Y') {{
+        sl.setAttribute('data-end-slider', 'true');
+        // Recolour every element inside the slider whose computed colour
+        // is the purple primaryColor — this catches tick labels, value
+        // displays, etc. regardless of element type or nesting.
+        sl.querySelectorAll('*').forEach(function(el) {{
+          var cc = window.parent.getComputedStyle(el).color;
+          if (cc === PURPLE) {{
+            el.style.setProperty('color', OC, 'important');
+          }}
+        }});
+      }}
+    }});
+  }}
+
+  markEndSliders();
+  setTimeout(markEndSliders, 50);
+  setTimeout(markEndSliders, 200);
+  setTimeout(markEndSliders, 500);
+  setTimeout(markEndSliders, 1000);
+  var obs = new MutationObserver(markEndSliders);
+  obs.observe(doc.body, {{childList:true, subtree:true}});
+  setTimeout(function() {{ obs.disconnect(); }}, 5000);
+}})();
+</script>""",
+            height=0,
+            width=0,
         )
-        st.plotly_chart(fig, use_container_width=True, key=key_prefix)
+
+    # ── Pitch preview: full width below the sliders ───────────────────────
+    fig = go.Figure()
+    for shape in _opta_pitch_shapes():
+        fig.add_shape(**shape)
+    if has_start:
+        fig.add_shape(type="rect",
+                      x0=sx_range[0], y0=sy_range[0], x1=sx_range[1], y1=sy_range[1],
+                      xref="x", yref="y",
+                      fillcolor="rgba(158,7,174,0.15)", line={"color": _BRAND_PURPLE, "width": 2})
+    if has_end:
+        fig.add_shape(type="rect",
+                      x0=ex_range[0], y0=ey_range[0], x1=ex_range[1], y1=ey_range[1],
+                      xref="x", yref="y",
+                      fillcolor="rgba(240,100,36,0.15)", line={"color": _BRAND_ORANGE, "width": 2})
+    fig.update_layout(
+        height=260, plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
+        margin={"l": 2, "r": 2, "t": 2, "b": 2},
+        xaxis={"range": [-2, 102], "showgrid": False, "zeroline": False, "showticklabels": False, "scaleanchor": "y", "scaleratio": 105 / 68},
+        yaxis={"range": [-2, 102], "showgrid": False, "zeroline": False, "showticklabels": False},
+        showlegend=False,
+    )
+    st.plotly_chart(fig, use_container_width=True, key=key_prefix)
 
     return bounds
 
@@ -1368,7 +1467,11 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
 
         with pa_ftab_coords:
             if pa_label_mode == "Leads to (sequence)":
-                st.caption("🔵 **Start zone** filters on the **start** of the 1st phase.  🔴 **End zone** filters on the **end** of the 2nd (Leads to) phase.")
+                st.markdown(
+                    f'<small><span style="color:{_BRAND_PURPLE};">&#9632;</span> <b>Start zone</b> filters on the <b>start</b> of the 1st phase. &nbsp; '
+                    f'<span style="color:{_BRAND_ORANGE};">&#9632;</span> <b>End zone</b> filters on the <b>end</b> of the 2nd (Leads to) phase.</small>',
+                    unsafe_allow_html=True,
+                )
             pa_coord_bounds = _pitch_zone_selector(
                 key_prefix="pa_coords",
                 has_start="startX" in phases_df.columns,
@@ -1386,22 +1489,25 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
                 ("Number of High Pressure on Touches",  "numberHighPressureOnTouches",   "pa_hpt"),
             ]
             pa_ac_range_inputs: dict[str, tuple[float, float]] = {}
-            for lbl, col, key in count_cols_pa:
-                if col not in phases_df.columns:
-                    continue
+            # Filter to only the columns that exist and have a range
+            active_count_cols = [
+                (lbl, col, key) for lbl, col, key in count_cols_pa
+                if col in phases_df.columns and int(phases_df[col].min()) != int(phases_df[col].max())
+            ]
+            ac_cols = st.columns(3)
+            for i, (lbl, col, key) in enumerate(active_count_cols):
                 col_min = int(phases_df[col].min())
                 col_max = int(phases_df[col].max())
-                if col_min == col_max:
-                    continue
-                selected = st.slider(
-                    lbl,
-                    min_value=col_min,
-                    max_value=col_max,
-                    value=(col_min, col_max),
-                    step=1,
-                    key=f"{key}_slider",
-                )
-                pa_ac_range_inputs[col] = (float(selected[0]), float(selected[1]))
+                with ac_cols[i % 3]:
+                    selected = st.slider(
+                        lbl,
+                        min_value=col_min,
+                        max_value=col_max,
+                        value=(col_min, col_max),
+                        step=1,
+                        key=f"{key}_slider",
+                    )
+                    pa_ac_range_inputs[col] = (float(selected[0]), float(selected[1]))
 
         with pa_ftab_outcomes:
             if pa_label_mode == "Leads to (sequence)":
@@ -2181,7 +2287,6 @@ def _sidebar_upload_mode() -> None:
     selected_ids: list[str] = st.multiselect(
         "Choose game(s) to load",
         options=all_ids,
-        default=st.session_state.get("upload_selected_ids", []),
         format_func=lambda gid: game_labels.get(gid, gid),
         key="upload_selected_ids",
     )
@@ -2325,7 +2430,6 @@ def _sidebar_local_mode() -> None:
     selected_ids: list[str] = st.multiselect(
         "Choose game(s) to load",
         options=all_ids,
-        default=st.session_state.get("selected_game_ids", []),
         format_func=lambda gid: id_to_label.get(gid, gid),
         key="selected_game_ids",
     )
@@ -2475,12 +2579,29 @@ input, textarea, select,
 }}
 
 /* ── Multiselect ─────────────────────────────────────────────── */
-[data-testid="stMultiSelect"] div[data-baseweb="select"] {{
+[data-testid="stMultiSelect"] div[data-baseweb="select"],
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div > div,
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div > div > div,
+[data-testid="stMultiSelect"] [data-baseweb="value-container"],
+[data-testid="stMultiSelect"] [data-baseweb="input-container"],
+[data-testid="stMultiSelect"] input {{
+    background-color: #1a1a1a !important;
+    color: #f0f0f0 !important;
+}}
+/* Override any inline style set by BaseWeb JS on the inner container */
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div[style],
+[data-testid="stMultiSelect"] div[data-baseweb="select"] > div > div[style] {{
     background-color: #1a1a1a !important;
 }}
 [data-baseweb="tag"] {{
     background-color: {_BRAND_PURPLE} !important;
     color: #ffffff !important;
+}}
+[data-baseweb="tag"] span,
+[data-baseweb="tag"] * {{
+    color: #ffffff !important;
+    background-color: transparent !important;
 }}
 
 /* ── Dataframes / tables ─────────────────────────────────────── */
