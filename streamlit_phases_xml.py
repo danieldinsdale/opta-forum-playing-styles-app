@@ -366,6 +366,15 @@ def parse_runs_xml(file_bytes: bytes) -> pd.DataFrame:
             if v is not None:
                 row[attr] = float(v)
 
+        # startTime / endTime (ms)
+        for t_attr in ("startTime", "endTime"):
+            tv = elem.get(t_attr)
+            if tv is not None:
+                try:
+                    row[t_attr] = int(tv)
+                except (ValueError, TypeError):
+                    pass
+
         labels_el = elem.find("labels")
         if labels_el is not None:
             for lbl in labels_el.findall("label"):
@@ -389,6 +398,18 @@ def parse_runs_xml(file_bytes: bytes) -> pd.DataFrame:
                     v = q.get("max")
                     if v is not None:
                         row["expectedThreat_max"] = float(v)
+                elif qtype == "speed":
+                    v = q.get("max")
+                    if v is not None:
+                        row["speed_max"] = round(float(v), 2)
+                elif qtype == "runFollowedByTeamShot":
+                    v = q.get("value")
+                    if v is not None:
+                        row["runFollowedByTeamShot"] = float(v)
+                elif qtype == "runFollowedByTeamGoal":
+                    v = q.get("value")
+                    if v is not None:
+                        row["runFollowedByTeamGoal"] = float(v)
 
         rows.append(row)
         elem.clear()
@@ -516,13 +537,14 @@ def parse_runs_json(data: dict) -> pd.DataFrame:
                 except (ValueError, TypeError):
                     pass
 
-        # startTime (keep as int ms for hover display)
-        st_val = run.get("startTime")
-        if st_val is not None:
-            try:
-                row["startTime"] = int(st_val)
-            except (ValueError, TypeError):
-                pass
+        # startTime / endTime (ms)
+        for t_attr in ("startTime", "endTime"):
+            tv = run.get(t_attr)
+            if tv is not None:
+                try:
+                    row[t_attr] = int(tv)
+                except (ValueError, TypeError):
+                    pass
 
         # master label
         labels_obj = run.get("labels", {})
@@ -555,6 +577,18 @@ def parse_runs_json(data: dict) -> pd.DataFrame:
                 v = q.get("max")
                 if v is not None:
                     row["expectedThreat_max"] = float(v)
+            elif qtype == "speed":
+                v = q.get("max")
+                if v is not None:
+                    row["speed_max"] = round(float(v), 2)
+            elif qtype == "runFollowedByTeamShot":
+                v = q.get("value")
+                if v is not None:
+                    row["runFollowedByTeamShot"] = float(v)
+            elif qtype == "runFollowedByTeamGoal":
+                v = q.get("value")
+                if v is not None:
+                    row["runFollowedByTeamGoal"] = float(v)
 
         if contestant_map and row.get("contestantId"):
             row["team_name"] = contestant_map.get(row["contestantId"], "")
@@ -760,7 +794,7 @@ def _render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map:
         except (TypeError, ValueError):
             return str(val)
 
-    plot_df["_start_mmss"] = plot_df["startTime"].apply(_ms_to_mmss)
+    plot_df["_start_mmss"] = plot_df["startTime"].apply(_ms_to_mmss) if "startTime" in plot_df.columns else ""
     if "_player_name" not in plot_df.columns:
         plot_df["_player_name"] = plot_df.get("playerId", "")
 
@@ -956,6 +990,10 @@ def _compute_runs_result(
     run_type_choice: str,
     dlb_choice: str,
     dangerous_choice: str,
+    followed_by_shot_choice: str,
+    followed_by_goal_choice: str,
+    speed_lo: float,
+    speed_max_hi: float,
     et_lo: float,
     et_hi: float,
     run_coord_bounds: tuple | None,
@@ -1000,6 +1038,8 @@ def _compute_runs_result(
     for _c in ("includesShots", "includesGoal", "startTime"):
         if _c not in ph_slim.columns:
             ph_slim[_c] = ""
+    # Rename phase startTime so it doesn't collide with run startTime after merge
+    ph_slim = ph_slim.rename(columns={"startTime": "phase_startTime"})
 
     ru = runs_df.copy()
     ru["_gid"]    = ru["game_id"].astype(str) if "game_id" in ru.columns else ""
@@ -1015,7 +1055,9 @@ def _compute_runs_result(
     run_keep_cols = ["_gid", "_period", "_team", "_rsf", "_ref", "_crid",
                      "run_id", "game_id", "periodId", "playerId", "contestantId",
                      "masterLabel", "runType", "defensiveLineBroken",
-                     "dangerous", "expectedThreat_max",
+                     "dangerous", "expectedThreat_max", "speed_max",
+                     "runFollowedByTeamShot", "runFollowedByTeamGoal",
+                     "startTime", "endTime",
                      "startX", "startY", "endX", "endY"]
     run_keep_cols = [c for c in run_keep_cols if c in ru.columns]
     ru_slim = ru[run_keep_cols].copy()
@@ -1096,6 +1138,19 @@ def _compute_runs_result(
         result_df = result_df[result_df["dangerous"] == 1.0]
     elif dangerous_choice == "No":
         result_df = result_df[result_df["dangerous"] == 0.0]
+    if followed_by_shot_choice == "Yes" and "runFollowedByTeamShot" in result_df.columns:
+        result_df = result_df[result_df["runFollowedByTeamShot"] == 1.0]
+    elif followed_by_shot_choice == "No" and "runFollowedByTeamShot" in result_df.columns:
+        result_df = result_df[result_df["runFollowedByTeamShot"] == 0.0]
+    if followed_by_goal_choice == "Yes" and "runFollowedByTeamGoal" in result_df.columns:
+        result_df = result_df[result_df["runFollowedByTeamGoal"] == 1.0]
+    elif followed_by_goal_choice == "No" and "runFollowedByTeamGoal" in result_df.columns:
+        result_df = result_df[result_df["runFollowedByTeamGoal"] == 0.0]
+    if speed_max_hi is not None and "speed_max" in result_df.columns:
+        result_df = result_df[
+            result_df["speed_max"].isna() |
+            ((result_df["speed_max"] >= speed_lo) & (result_df["speed_max"] <= speed_max_hi))
+        ]
     if has_et and not _et_same:
         result_df = result_df[result_df[et_col].isna() | ((result_df[et_col] >= et_lo) & (result_df[et_col] <= et_hi))]
 
@@ -1127,7 +1182,7 @@ def _compute_runs_result(
 
     # ── Consolidate: each unique run counted once, phase labels joined ────
     if not result_df.empty:
-        phase_cols_set = {"phase_id", "phaseLabel", "startTime", "includesShots", "includesGoal"}
+        phase_cols_set = {"phase_id", "phaseLabel", "phase_startTime", "includesShots", "includesGoal"}
 
         def _join_unique(x):
             return ", ".join(sorted({str(v) for v in x if pd.notna(v) and str(v) != "nan"}))
@@ -1176,13 +1231,11 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
     else:
         _et_min_src = _et_max_src = 0.0
         _et_same = True
-    _et_input_min = min(_et_min_src, 0.0)
-    _et_input_max = max(_et_max_src, 1.0)
 
     # ── Filters expander (tabs inside — nested expanders not supported) ───
     with st.expander("🔍 Filters", expanded=True):
-        ftab_run, ftab_phase, ftab_coords, ftab_team = st.tabs(
-            ["🏃 Run Criteria", "📋 Phase Criteria", "📍 Run Coordinates", "👥 Team / Player"]
+        ftab_run, ftab_phase, ftab_coords, ftab_team, ftab_outcomes = st.tabs(
+            ["🏃 Run Criteria", "📋 Phase Criteria", "📍 Run Coordinates", "👥 Team / Player", "🎯 Attacking Outcomes"]
         )
 
         with ftab_phase:
@@ -1201,23 +1254,52 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
                 includes_goal_choice = st.radio("**Includes goal**", ["Any", "True", "False"], horizontal=True, key="rp_includes_goal")
 
         with ftab_run:
-            r_col1, r_col2 = st.columns(2)
-            with r_col1:
-                selected_run_labels = st.multiselect("Main label", _all_run_master_labels, default=_all_run_master_labels, key="run_master_labels")
-                run_type_choice = st.radio("**Run type**", ["Any", "inPossession", "outOfPossession"], horizontal=True, key="run_type_filter")
-                dlb_choice = st.radio("**Defensive line broken**", ["Any", "Yes", "No"], horizontal=True, key="run_dlb")
-            with r_col2:
-                dangerous_choice = st.radio("**Dangerous**", ["Any", "Yes", "No"], horizontal=True, key="run_dangerous")
-                if _has_et_src and not _et_same:
-                    st.markdown("**Max Expected Threat**")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        et_lo = st.number_input("Min expected threat", min_value=_et_input_min, max_value=_et_input_max, value=0.0, format="%.4f", key="run_et_min")
-                    with c2:
-                        et_hi = st.number_input("Max expected threat", min_value=_et_input_min, max_value=_et_input_max, value=1.0, format="%.4f", key="run_et_max")
+            # ── Row 1: Master Label + Expected Threat slider + Speed slider
+            r1c1, r1c2, r1c3 = st.columns(3)
+            with r1c1:
+                selected_run_labels = st.multiselect("Main label", _all_run_master_labels, default=[], key="run_master_labels")
+            if _has_et_src and not _et_same:
+                with r1c2:
+                    _et_sl = st.slider(
+                        "Expected threat",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=(0.0, 1.0),
+                        step=0.001,
+                        format="%.3f",
+                        key="run_et_range",
+                    )
+                    et_lo, et_hi = float(_et_sl[0]), float(_et_sl[1])
+            else:
+                et_lo = _et_min_src
+                et_hi = _et_max_src
+            with r1c3:
+                _has_speed = "speed_max" in runs_df.columns and runs_df["speed_max"].notna().any()
+                if _has_speed:
+                    _speed_data_min = float(runs_df["speed_max"].min(skipna=True))
+                    _speed_data_max = float(runs_df["speed_max"].max(skipna=True))
+                    _speed_sl_max = round(_speed_data_max + 0.5, 1)
+                    _speed_sl = st.slider(
+                        "Max speed (m/s)",
+                        min_value=0.0,
+                        max_value=_speed_sl_max,
+                        value=(0.0, _speed_sl_max),
+                        step=0.1,
+                        format="%.1f",
+                        key="run_speed_range",
+                    )
+                    speed_lo, speed_max_hi = float(_speed_sl[0]), float(_speed_sl[1])
                 else:
-                    et_lo = _et_min_src
-                    et_hi = _et_max_src
+                    speed_lo = 0.0
+                    speed_max_hi = None
+            # ── Row 2: Remaining filters ──────────────────────────────────
+            r2c1, r2c2, r2c3 = st.columns(3)
+            with r2c1:
+                run_type_choice = st.radio("**Run type**", ["Any", "inPossession", "outOfPossession"], horizontal=True, key="run_type_filter")
+            with r2c2:
+                dlb_choice = st.radio("**Defensive line broken**", ["Any", "Yes", "No"], horizontal=True, key="run_dlb")
+            with r2c3:
+                dangerous_choice = st.radio("**Dangerous**", ["Any", "Yes", "No"], horizontal=True, key="run_dangerous")
 
         with ftab_coords:
             run_coord_bounds = _pitch_zone_selector(
@@ -1252,21 +1334,43 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
                         key="run_player_filter",
                     )
 
+        with ftab_outcomes:
+            st.caption("These filters apply to **inPossession** runs only.")
+            ao_c1, ao_c2 = st.columns(2)
+            with ao_c1:
+                followed_by_shot_choice = st.radio(
+                    "**Followed by Team Shot**",
+                    ["Any", "Yes", "No"],
+                    horizontal=True,
+                    key="run_followed_shot",
+                )
+            with ao_c2:
+                followed_by_goal_choice = st.radio(
+                    "**Followed by Team Goal**",
+                    ["Any", "Yes", "No"],
+                    horizontal=True,
+                    key="run_followed_goal",
+                )
+
     # ── Generate Outputs button ───────────────────────────────────────────
     if st.button("▶ Generate Outputs", type="primary", key="runs_generate"):
         st.session_state["runs_committed"] = {
-            "selected_labels":      selected_labels,
-            "includes_shots":       includes_shots_choice,
-            "includes_goal":        includes_goal_choice,
-            "selected_run_labels":  selected_run_labels,
-            "run_type_choice":      run_type_choice,
-            "dlb_choice":           dlb_choice,
-            "dangerous_choice":     dangerous_choice,
-            "et_lo":                et_lo,
-            "et_hi":                et_hi,
-            "run_coord_bounds":     run_coord_bounds,
-            "selected_team_name":   selected_team_name,
-            "selected_player_name": selected_player_name,
+            "selected_labels":        selected_labels,
+            "includes_shots":         includes_shots_choice,
+            "includes_goal":          includes_goal_choice,
+            "selected_run_labels":    selected_run_labels,
+            "run_type_choice":        run_type_choice,
+            "dlb_choice":             dlb_choice,
+            "dangerous_choice":       dangerous_choice,
+            "followed_by_shot":       followed_by_shot_choice,
+            "followed_by_goal":       followed_by_goal_choice,
+            "speed_lo":               speed_lo,
+            "speed_max_hi":           speed_max_hi,
+            "et_lo":                  et_lo,
+            "et_hi":                  et_hi,
+            "run_coord_bounds":       run_coord_bounds,
+            "selected_team_name":     selected_team_name,
+            "selected_player_name":   selected_player_name,
         }
 
     committed = st.session_state.get("runs_committed")
@@ -1289,6 +1393,10 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         run_type_choice=committed["run_type_choice"],
         dlb_choice=committed["dlb_choice"],
         dangerous_choice=committed["dangerous_choice"],
+        followed_by_shot_choice=committed.get("followed_by_shot", "Any"),
+        followed_by_goal_choice=committed.get("followed_by_goal", "Any"),
+        speed_lo=float(committed.get("speed_lo", 0.0)),
+        speed_max_hi=committed.get("speed_max_hi", None),
         et_lo=float(committed["et_lo"]),
         et_hi=float(committed["et_hi"]),
         run_coord_bounds=_coord_bounds_hashable,
@@ -1317,7 +1425,7 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         group_by = st.radio("**Aggregate by**", ["Team", "Player"], horizontal=True, key="run_group_by", disabled=(view_mode != "Aggregated"))
 
     if view_mode == "Individual runs":
-        display_cols = ["game_id", "run_id", "phase_id", "masterLabel", "phaseLabel"]
+        display_cols = ["game_id", "run_id", "phase_id", "periodId", "startTime", "endTime", "masterLabel", "phaseLabel"]
         if "team_name" in result_df.columns:
             display_cols.append("team_name")
         if "player_name" in result_df.columns:
@@ -1325,7 +1433,105 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         elif "playerId" in result_df.columns:
             display_cols.append("playerId")
         display_cols = [c for c in display_cols if c in result_df.columns]
-        st.dataframe(result_df[display_cols].reset_index(drop=True), use_container_width=True, height=min(600, max(200, len(result_df) * 38)))
+
+        # Format time columns as mm:ss for display
+        ind_display_df = result_df[display_cols].reset_index(drop=True).copy()
+        def _ms_to_mmss_run(val) -> str:
+            try:
+                total_s = int(float(val)) // 1000
+                return f"{total_s // 60}:{total_s % 60:02d}"
+            except (TypeError, ValueError):
+                return str(val)
+        for _tc in ("startTime", "endTime"):
+            if _tc in ind_display_df.columns:
+                ind_display_df[_tc] = ind_display_df[_tc].apply(_ms_to_mmss_run)
+
+        st.caption("👆 Click a row to select it, then press **▶ Play Video** below.")
+        run_table_sel = st.dataframe(
+            ind_display_df,
+            use_container_width=True,
+            height=min(600, max(200, len(result_df) * 38)),
+            selection_mode="single-row",
+            on_select="rerun",
+            key="run_ind_table",
+        )
+        _sel_run_rows = run_table_sel.selection.get("rows", []) if run_table_sel and run_table_sel.selection else []
+        run_selected_idx = int(_sel_run_rows[0]) if _sel_run_rows else None
+
+        # ── Video playback ────────────────────────────────────────────────
+        st.markdown("##### 🎬 Video Playback")
+
+        if run_selected_idx is None:
+            st.info("Click a row in the table above to select a run, then press ▶ Play Video.")
+        else:
+            _sel_run = result_df.iloc[run_selected_idx]
+            _run_team = _sel_run.get("team_name", _sel_run.get("contestantId", ""))
+            _run_player = _sel_run.get("player_name", _sel_run.get("playerId", ""))
+            st.success(
+                f"Selected: run **{_sel_run.get('run_id', '')}** — "
+                f"**{_run_team}** — {_run_player} — "
+                f"Period {_sel_run.get('periodId', '')} — "
+                f"{_sel_run.get('masterLabel', '')}"
+            )
+
+        vid_c1, vid_c2 = st.columns(2)
+        with vid_c1:
+            run_before_buf = st.number_input("Pre-buffer (s)", min_value=0, max_value=10, value=5, step=1, key="run_vid_pre")
+        with vid_c2:
+            run_after_buf = st.number_input("Post-buffer (s)", min_value=0, max_value=10, value=5, step=1, key="run_vid_post")
+
+        if st.button("▶ Play Video", key="run_play_video", type="primary", disabled=run_selected_idx is None):
+            _row = result_df.iloc[run_selected_idx]
+            _game_id = str(_row.get("game_id", ""))
+            _period_id = int(_row.get("periodId", 1))
+
+            # Use startTime/endTime (ms) if available, otherwise fall back to frames at 25 fps
+            _start_ms = _row.get("startTime")
+            _end_ms   = _row.get("endTime")
+            if pd.notna(_start_ms) and pd.notna(_end_ms):
+                _time_in  = int(float(_start_ms) / 1000)
+                _time_out = int(float(_end_ms) / 1000)
+            elif pd.notna(_start_ms):
+                _time_in  = int(float(_start_ms) / 1000)
+                _time_out = _time_in  # let buffers carry the window
+            else:
+                # Frame-based fallback at 25 fps
+                _sf = _row.get("run_startFrame") or _row.get("startFrame", 0)
+                _ef = _row.get("run_endFrame")   or _row.get("endFrame", _sf)
+                _time_in  = int(float(_sf) / 25)
+                _time_out = int(float(_ef) / 25)
+
+            if not _game_id:
+                st.error("No game_id available for this run.")
+            else:
+                _api_key = _get_vod_api_key()
+                if not _api_key:
+                    st.error("VOD API key is not configured. Set the `VOD_API_KEY` environment variable or enter it in the sidebar.")
+                else:
+                    with st.spinner("Fetching video clip…"):
+                        try:
+                            _url = get_vod_streaming(
+                                game_uuid=_game_id,
+                                period=_period_id,
+                                time_in=_time_in,
+                                time_out=_time_out,
+                                before_time=int(run_before_buf),
+                                after_time=int(run_after_buf),
+                                api_key=_api_key,
+                            )
+                            components.html(
+                                f'<iframe src="{_url}" width="950" height="600" '
+                                f'frameborder="0" allowfullscreen></iframe>',
+                                height=620,
+                            )
+                        except requests.exceptions.HTTPError as exc:
+                            st.error(f"VOD API request failed: {exc.response.status_code} {exc.response.reason}")
+                        except requests.exceptions.RequestException:
+                            st.error("Network error fetching video clip. Please try again.")
+                        except (ValueError, KeyError, IndexError) as exc:
+                            st.error(f"Could not retrieve video: {exc}")
+                        except Exception:
+                            st.error("Unexpected error fetching video. Please try again.")
 
     elif view_mode == "Pitch map":
         _render_runs_pitch_map(result_df, match_info, squad_map)
