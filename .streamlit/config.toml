@@ -1,7 +1,30 @@
 [theme]
+# Streamlit built-in theme — controls sliders, active tabs, checkboxes, etc.
 base                     = "dark"
-primaryColor             = "#9E07AE"
-backgroundColor          = "#000000"
-secondaryBackgroundColor = "#1a1a1a"
+primaryColor             = "#9E07AE"   # brand purple
+backgroundColor          = "#000000"   # main canvas
+secondaryBackgroundColor = "#0d0d0d"   # sidebar / card background
 textColor                = "#f0f0f0"
 font                     = "sans serif"
+
+[brand]
+# Extra palette colours read by the app at startup via tomli.
+# Change values here to retheme the whole app without touching Python code.
+primary = "#222222"
+purple  = "#9E07AE"
+amber   = "#FAA51A"
+orange  = "#F06424"
+red     = "#E5202F"
+
+[fonts]
+# Brand typeface — Barlow family (Google Fonts).
+# headline_font   : Black Compressed  — primary headlines (≤8 words, ample vertical space)
+# wide_font       : ExtraBold Wide    — headlines with limited vertical space; half-size if paired
+# title_font      : SemiBold Regular  — titles, subheaders, emphasis (all-caps subheaders ≤8 words)
+# body_font       : Semilight Regular — body copy, sub-headlines at 1/3 headline size
+# google_fonts_url: Google Fonts import URL (change to self-host if needed)
+headline_font    = "Barlow Condensed"
+wide_font        = "Barlow"
+title_font       = "Barlow"
+body_font        = "Barlow"
+google_fonts_url = "https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@900&family=Barlow:wght@300;400;600;800&display=swap"

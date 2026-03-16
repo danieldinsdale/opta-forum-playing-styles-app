@@ -26,6 +26,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+import tomli
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Feeds directory configuration
@@ -33,6 +34,40 @@ import streamlit.components.v1 as components
 
 _REPO_ROOT = Path(__file__).parent
 _FEEDS_BASE = _REPO_ROOT / "feeds"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Brand colours & fonts — loaded from .streamlit/config.toml so the palette
+# and typefaces can be changed in one place without touching Python code.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _load_config() -> dict:
+    """Read the full .streamlit/config.toml and return it as a dict."""
+    _config_path = _REPO_ROOT / ".streamlit" / "config.toml"
+    try:
+        with open(_config_path, "rb") as _f:
+            return tomli.load(_f)
+    except Exception:
+        return {}
+
+_CFG = _load_config()
+
+_BRAND = _CFG.get("brand", {})
+_BRAND_PRIMARY = _BRAND.get("primary", "#222222")
+_BRAND_PURPLE  = _BRAND.get("purple",  "#9E07AE")
+_BRAND_AMBER   = _BRAND.get("amber",   "#FAA51A")
+_BRAND_ORANGE  = _BRAND.get("orange",  "#F06424")
+_BRAND_RED     = _BRAND.get("red",     "#E5202F")
+
+_FONTS = _CFG.get("fonts", {})
+_FONT_HEADLINE   = _FONTS.get("headline_font",    "Barlow Condensed")   # Black Compressed
+_FONT_WIDE       = _FONTS.get("wide_font",         "Barlow")             # ExtraBold Wide
+_FONT_TITLE      = _FONTS.get("title_font",        "Barlow")             # SemiBold Regular
+_FONT_BODY       = _FONTS.get("body_font",         "Barlow")             # Semilight Regular
+_FONT_GFX_URL    = _FONTS.get(
+    "google_fonts_url",
+    "https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@900"
+    "&family=Barlow:wght@300;400;600;800&display=swap",
+)
 
 _COMPETITION_DIRS: list[str] = (
     sorted(p.name for p in _FEEDS_BASE.iterdir() if p.is_dir())
@@ -740,7 +775,7 @@ def _render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map:
         "Phase label: %{customdata[3]}<br>"
         "Period: %{customdata[4]}<br>"
         "Start time: %{customdata[5]}<br>"
-        "Master label: %{customdata[6]}<br>"
+        "Main label: %{customdata[6]}<br>"
         "<extra></extra>"
     )
     custom_cols = ["run_id", "_player_name", "phase_id", "phaseLabel", "periodId", "_start_mmss", "masterLabel"]
@@ -844,7 +879,7 @@ def _pitch_zone_selector(key_prefix: str, has_start: bool = True, has_end: bool 
         if has_start:
             st.markdown(
                 f'<p style="font-weight:700;margin-bottom:4px;">'
-                f'<span style="color:{_BRAND_PURPLE};">&#9632;</span> Start zone</p>',
+                f'<span style="color:{_BRAND_AMBER};">&#9632;</span> Start zone</p>',
                 unsafe_allow_html=True,
             )
             if st.button("Reset start zone", key=f"{key_prefix}_sx_reset"):
@@ -863,7 +898,7 @@ def _pitch_zone_selector(key_prefix: str, has_start: bool = True, has_end: bool 
         if has_end:
             st.markdown(
                 f'<p style="font-weight:700;margin-bottom:4px;">'
-                f'<span style="color:{_BRAND_ORANGE};">&#9632;</span> End zone</p>',
+                f'<span style="color:{_BRAND_RED};">&#9632;</span> End zone</p>',
                 unsafe_allow_html=True,
             )
             if st.button("Reset end zone", key=f"{key_prefix}_ex_reset"):
@@ -876,77 +911,6 @@ def _pitch_zone_selector(key_prefix: str, has_start: bool = True, has_end: bool 
                 end_y_min=float(ey_range[0]), end_y_max=float(ey_range[1]),
             )
 
-    # JS to re-colour end-zone slider thumbs and filled track to brand orange.
-    # Runs once after Streamlit renders the widgets; uses a MutationObserver
-    # fallback so it catches late-rendering elements too.
-    if has_end:
-        _oc = _BRAND_ORANGE
-        components.html(
-            f"""<script>
-(function() {{
-  var OC = "{_oc}";
-  var doc = window.parent.document;
-
-  // Inject a persistent <style> into the parent doc so it survives re-renders.
-  // Uses a data-attribute we stamp onto End sliders to scope the override.
-  var styleId = "end-slider-orange-{key_prefix}";
-  if (!doc.getElementById(styleId)) {{
-    var s = doc.createElement("style");
-    s.id = styleId;
-    s.textContent =
-      '[data-end-slider="true"] [role="slider"] {{' +
-      '  background-color: ' + OC + ' !important;' +
-      '  border-color: ' + OC + ' !important;' +
-      '}}' +
-      '[data-end-slider="true"] [data-baseweb="slider"] > div > div > div {{' +
-      '  background-color: ' + OC + ' !important;' +
-      '}}' +
-      '[data-end-slider="true"] [data-testid="stTickBarMin"],' +
-      '[data-end-slider="true"] [data-testid="stTickBarMax"],' +
-      '[data-end-slider="true"] [data-testid="stTickBar"],' +
-      '[data-end-slider="true"] [data-testid="stTickBar"] div {{' +
-      '  color: ' + OC + ' !important;' +
-      '}}';
-    doc.head.appendChild(s);
-  }}
-
-  // The purple primaryColor as computed RGB
-  var PURPLE = 'rgb(158, 7, 174)';
-
-  function markEndSliders() {{
-    var sliders = doc.querySelectorAll('[data-testid="stSlider"]');
-    sliders.forEach(function(sl) {{
-      var lbl = sl.querySelector('[data-testid="stWidgetLabel"] p');
-      if (!lbl) return;
-      var txt = lbl.textContent.trim();
-      if (txt === 'End X' || txt === 'End Y') {{
-        sl.setAttribute('data-end-slider', 'true');
-        // Recolour every element inside the slider whose computed colour
-        // is the purple primaryColor — this catches tick labels, value
-        // displays, etc. regardless of element type or nesting.
-        sl.querySelectorAll('*').forEach(function(el) {{
-          var cc = window.parent.getComputedStyle(el).color;
-          if (cc === PURPLE) {{
-            el.style.setProperty('color', OC, 'important');
-          }}
-        }});
-      }}
-    }});
-  }}
-
-  markEndSliders();
-  setTimeout(markEndSliders, 50);
-  setTimeout(markEndSliders, 200);
-  setTimeout(markEndSliders, 500);
-  setTimeout(markEndSliders, 1000);
-  var obs = new MutationObserver(markEndSliders);
-  obs.observe(doc.body, {{childList:true, subtree:true}});
-  setTimeout(function() {{ obs.disconnect(); }}, 5000);
-}})();
-</script>""",
-            height=0,
-            width=0,
-        )
 
     # ── Pitch preview: full width below the sliders ───────────────────────
     fig = go.Figure()
@@ -956,12 +920,12 @@ def _pitch_zone_selector(key_prefix: str, has_start: bool = True, has_end: bool 
         fig.add_shape(type="rect",
                       x0=sx_range[0], y0=sy_range[0], x1=sx_range[1], y1=sy_range[1],
                       xref="x", yref="y",
-                      fillcolor="rgba(158,7,174,0.15)", line={"color": _BRAND_PURPLE, "width": 2})
+                      fillcolor="rgba(250,165,26,0.15)", line={"color": _BRAND_AMBER, "width": 2})
     if has_end:
         fig.add_shape(type="rect",
                       x0=ex_range[0], y0=ey_range[0], x1=ex_range[1], y1=ey_range[1],
                       xref="x", yref="y",
-                      fillcolor="rgba(240,100,36,0.15)", line={"color": _BRAND_ORANGE, "width": 2})
+                      fillcolor="rgba(229,32,47,0.15)", line={"color": _BRAND_RED, "width": 2})
     fig.update_layout(
         height=260, plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
         margin={"l": 2, "r": 2, "t": 2, "b": 2},
@@ -1239,7 +1203,7 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
         with ftab_run:
             r_col1, r_col2 = st.columns(2)
             with r_col1:
-                selected_run_labels = st.multiselect("Master label", _all_run_master_labels, default=_all_run_master_labels, key="run_master_labels")
+                selected_run_labels = st.multiselect("Main label", _all_run_master_labels, default=_all_run_master_labels, key="run_master_labels")
                 run_type_choice = st.radio("**Run type**", ["Any", "inPossession", "outOfPossession"], horizontal=True, key="run_type_filter")
                 dlb_choice = st.radio("**Defensive line broken**", ["Any", "Yes", "No"], horizontal=True, key="run_dlb")
             with r_col2:
@@ -1468,8 +1432,8 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
         with pa_ftab_coords:
             if pa_label_mode == "Leads to (sequence)":
                 st.markdown(
-                    f'<small><span style="color:{_BRAND_PURPLE};">&#9632;</span> <b>Start zone</b> filters on the <b>start</b> of the 1st phase. &nbsp; '
-                    f'<span style="color:{_BRAND_ORANGE};">&#9632;</span> <b>End zone</b> filters on the <b>end</b> of the 2nd (Leads to) phase.</small>',
+                    f'<small><span style="color:{_BRAND_AMBER};">&#9632;</span> <b>Start zone</b> filters on the <b>start</b> of the 1st phase. &nbsp; '
+                    f'<span style="color:{_BRAND_RED};">&#9632;</span> <b>End zone</b> filters on the <b>end</b> of the 2nd (Leads to) phase.</small>',
                     unsafe_allow_html=True,
                 )
             pa_coord_bounds = _pitch_zone_selector(
@@ -2476,11 +2440,7 @@ def _sidebar_local_mode() -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 # Brand colours & header
 # ──────────────────────────────────────────────────────────────────────────────
-
-_BRAND_PRIMARY   = "#222222"
-_BRAND_PURPLE    = "#9E07AE"
-_BRAND_AMBER     = "#FAA51A"
-_BRAND_ORANGE    = "#F06424"
+# (Colours are loaded from .streamlit/config.toml [brand] at module top)
 
 _LOGOS_DIR = _REPO_ROOT / "logos"
 _LOGO_DARK  = _LOGOS_DIR / "opta-ai-logo_white.png"   # white logo → shown on dark banner
@@ -2507,6 +2467,119 @@ def _render_header() -> None:
     st.markdown(
         f"""
 <style>
+/* ── Google Fonts import ──────────────────────────────────────── */
+@import url('{_FONT_GFX_URL}');
+
+/* ── Font role definitions ────────────────────────────────────── */
+/* Headline: Black Compressed (Barlow Condensed 900) — ≤8 words */
+/* Wide headline: ExtraBold Wide (Barlow 800 expanded) — limited vertical space */
+/* Title / subheader: SemiBold (Barlow 600) — all-caps subheaders ≤8 words */
+/* Body / semilight: Light (Barlow 300) — body copy and sub-headlines */
+
+/* Base body font — Semilight / body copy.
+   NOTE: Do NOT include span or div here — Streamlit renders Material Icons
+   as <span class="material-icons"> / <span class="material-symbols-*"> and
+   overriding their font-family breaks icon ligatures (shows raw text instead). */
+html, body,
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+[data-testid="block-container"],
+p, li, label,
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li {{
+    font-family: '{_FONT_BODY}', sans-serif !important;
+    font-weight: 300 !important;
+}}
+
+/* Explicitly protect Material Icons / Symbols from font override */
+.material-icons,
+.material-icons-outlined,
+.material-icons-round,
+.material-icons-sharp,
+[class*="material-symbols"] {{
+    font-family: 'Material Icons', 'Material Symbols Outlined', 'Material Symbols Rounded' !important;
+    font-weight: normal !important;
+}}
+
+/* Headings h1 — Black Compressed headline */
+h1,
+[data-testid="stMarkdownContainer"] h1 {{
+    font-family: '{_FONT_HEADLINE}', sans-serif !important;
+    font-weight: 900 !important;
+    letter-spacing: 0.01em !important;
+    text-transform: uppercase !important;
+}}
+
+/* Headings h2 — ExtraBold Wide sub-headline */
+h2,
+[data-testid="stMarkdownContainer"] h2 {{
+    font-family: '{_FONT_WIDE}', sans-serif !important;
+    font-weight: 800 !important;
+    font-stretch: expanded !important;
+    letter-spacing: 0.04em !important;
+}}
+
+/* Headings h3/h4 — SemiBold title / subheader */
+h3, h4,
+[data-testid="stMarkdownContainer"] h3,
+[data-testid="stMarkdownContainer"] h4 {{
+    font-family: '{_FONT_TITLE}', sans-serif !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.03em !important;
+}}
+
+/* Bold / strong emphasis — SemiBold */
+strong, b,
+[data-testid="stMarkdownContainer"] strong {{
+    font-family: '{_FONT_TITLE}', sans-serif !important;
+    font-weight: 600 !important;
+}}
+
+/* Widget labels — SemiBold */
+[data-testid="stWidgetLabel"] p,
+label {{
+    font-family: '{_FONT_TITLE}', sans-serif !important;
+    font-weight: 600 !important;
+}}
+
+/* Buttons — SemiBold */
+button, .stButton > button {{
+    font-family: '{_FONT_TITLE}', sans-serif !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.03em !important;
+}}
+
+/* Tab labels — SemiBold */
+.stTabs [data-baseweb="tab"] {{
+    font-family: '{_FONT_TITLE}', sans-serif !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.04em !important;
+}}
+
+/* Dataframe / code — keep monospace but inherit body otherwise */
+code, pre {{
+    font-family: 'SFMono-Regular', 'Consolas', monospace !important;
+    font-weight: 400 !important;
+}}
+
+/* Banner title — Black Compressed */
+.brand-header-title {{
+    font-family: '{_FONT_HEADLINE}', sans-serif !important;
+    font-weight: 900 !important;
+    letter-spacing: 0.02em !important;
+    text-transform: uppercase !important;
+}}
+
+/* Banner sub-label — ExtraBold Wide at ~half headline size */
+.brand-header-sub {{
+    font-family: '{_FONT_WIDE}', sans-serif !important;
+    font-weight: 800 !important;
+    font-stretch: expanded !important;
+    letter-spacing: 0.06em !important;
+    text-transform: uppercase !important;
+}}
+
 /* ── Dark base ────────────────────────────────────────────────── */
 html, body,
 .stApp,
@@ -2527,7 +2600,7 @@ section[data-testid="stSidebar"] * {{
 section[data-testid="stSidebar"] h1,
 section[data-testid="stSidebar"] h2,
 section[data-testid="stSidebar"] h3 {{
-    color: {_BRAND_PURPLE} !important;
+    color: {_BRAND_AMBER} !important;
 }}
 
 /* ── Top banner ───────────────────────────────────────────────── */
@@ -2539,7 +2612,7 @@ section[data-testid="stSidebar"] h3 {{
     padding: 14px 28px;
     border-radius: 8px;
     margin-bottom: 18px;
-    border-bottom: 3px solid {_BRAND_PURPLE};
+    border-bottom: 3px solid {_BRAND_AMBER};
 }}
 .brand-header-title {{
     color: #ffffff;
@@ -2579,21 +2652,22 @@ input, textarea, select,
 }}
 
 /* ── Multiselect ─────────────────────────────────────────────── */
-[data-testid="stMultiSelect"] div[data-baseweb="select"],
-[data-testid="stMultiSelect"] div[data-baseweb="select"] > div,
-[data-testid="stMultiSelect"] div[data-baseweb="select"] > div > div,
-[data-testid="stMultiSelect"] div[data-baseweb="select"] > div > div > div,
-[data-testid="stMultiSelect"] [data-baseweb="value-container"],
-[data-testid="stMultiSelect"] [data-baseweb="input-container"],
-[data-testid="stMultiSelect"] input {{
+/* Outer container gets the dark background */
+[data-testid="stMultiSelect"] div[data-baseweb="select"] {{
     background-color: #1a1a1a !important;
     color: #f0f0f0 !important;
 }}
-/* Override any inline style set by BaseWeb JS on the inner container */
-[data-testid="stMultiSelect"] div[data-baseweb="select"] > div[style],
-[data-testid="stMultiSelect"] div[data-baseweb="select"] > div > div[style] {{
-    background-color: #1a1a1a !important;
+/* ALL inner layers transparent — prevents any inner div from showing a
+   mismatched background that causes the grey-rectangle-on-first-tag bug */
+[data-testid="stMultiSelect"] div[data-baseweb="select"] div {{
+    background-color: transparent !important;
+    color: #f0f0f0 !important;
 }}
+[data-testid="stMultiSelect"] input {{
+    background-color: transparent !important;
+    color: #f0f0f0 !important;
+}}
+/* Tags (selected value pills) — purple fill */
 [data-baseweb="tag"] {{
     background-color: {_BRAND_PURPLE} !important;
     color: #ffffff !important;
@@ -2602,6 +2676,16 @@ input, textarea, select,
 [data-baseweb="tag"] * {{
     color: #ffffff !important;
     background-color: transparent !important;
+}}
+/* Dropdown menu needs its own dark background (it's outside the select div) */
+[data-baseweb="popover"] [role="listbox"],
+[data-baseweb="popover"] ul,
+[data-baseweb="popover"] li {{
+    background-color: #1a1a1a !important;
+    color: #f0f0f0 !important;
+}}
+[data-baseweb="popover"] li:hover {{
+    background-color: #333333 !important;
 }}
 
 /* ── Dataframes / tables ─────────────────────────────────────── */
@@ -2620,8 +2704,8 @@ input, textarea, select,
     color: #aaaaaa !important;
 }}
 .stTabs [aria-selected="true"] {{
-    color: {_BRAND_PURPLE} !important;
-    border-bottom-color: {_BRAND_PURPLE} !important;
+    color: {_BRAND_AMBER} !important;
+    border-bottom-color: {_BRAND_AMBER} !important;
 }}
 
 /* ── Primary buttons ─────────────────────────────────────────── */
@@ -2642,8 +2726,8 @@ input, textarea, select,
     color: #f0f0f0 !important;
 }}
 .stButton > button[kind="secondary"]:hover {{
-    border-color: {_BRAND_PURPLE} !important;
-    color: {_BRAND_PURPLE} !important;
+    border-color: {_BRAND_AMBER} !important;
+    color: {_BRAND_AMBER} !important;
 }}
 
 /* ── Info / warning / success / error boxes ──────────────────── */
@@ -2668,7 +2752,7 @@ input, textarea, select,
 ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
 ::-webkit-scrollbar-track {{ background: #000000; }}
 ::-webkit-scrollbar-thumb {{ background: #333333; border-radius: 3px; }}
-::-webkit-scrollbar-thumb:hover {{ background: {_BRAND_PURPLE}; }}
+::-webkit-scrollbar-thumb:hover {{ background: {_BRAND_AMBER}; }}
 </style>
 
 <div class="brand-header">
@@ -2715,7 +2799,6 @@ def main():
             )
         else:
             load_mode = "📤 Upload files"
-            st.caption("ℹ️ No local `feeds/` directory found — upload mode only.")
 
         st.markdown("---")
 
