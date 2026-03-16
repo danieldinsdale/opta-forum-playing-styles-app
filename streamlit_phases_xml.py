@@ -1630,9 +1630,9 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
             st.success(f"Selected: row {selected_row_idx} — **{_sel_row.get('team_name', '')}** — {_time_str}")
         vid_c1, vid_c2 = st.columns(2)
         with vid_c1:
-            before_buffer = st.number_input("Pre-buffer (s)", min_value=0, max_value=30, value=5, step=1, key="pa_vid_pre")
+            before_buffer = st.number_input("Pre-buffer (s)", min_value=0, max_value=10, value=5, step=1, key="pa_vid_pre")
         with vid_c2:
-            after_buffer = st.number_input("Post-buffer (s)", min_value=0, max_value=30, value=5, step=1, key="pa_vid_post")
+            after_buffer = st.number_input("Post-buffer (s)", min_value=0, max_value=10, value=5, step=1, key="pa_vid_post")
 
         if st.button("▶ Play Video", key="pa_play_video", type="primary", disabled=selected_row_idx is None):
             row = filtered.iloc[selected_row_idx]
@@ -1667,7 +1667,7 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
                                 height=620,
                             )
                         except requests.exceptions.HTTPError as exc:
-                            st.error(f"VOD API request failed: {exc}")
+                            st.error(f"VOD API request failed: {exc.response.status_code} {exc.response.reason}")
                         except (ValueError, KeyError, IndexError) as exc:
                             st.error(f"Could not retrieve video: {exc}")
                         except Exception as exc:
