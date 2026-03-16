@@ -10,6 +10,7 @@ Run with:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -564,9 +565,9 @@ def _load_game(game_meta: dict) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
 
 def _opta_pitch_shapes() -> list[dict]:
     """Plotly shapes for an Opta 0-100 x 0-100 pitch (105m × 68m)."""
-    line = {"type": "line",   "line": {"color": "#555555", "width": 1.5}, "xref": "x", "yref": "y"}
-    rect = {"type": "rect",   "line": {"color": "#555555", "width": 1.5}, "fillcolor": "rgba(0,0,0,0)", "xref": "x", "yref": "y"}
-    circ = {"type": "circle", "line": {"color": "#555555", "width": 1.5}, "fillcolor": "rgba(0,0,0,0)", "xref": "x", "yref": "y"}
+    line = {"type": "line",   "line": {"color": "#aaaaaa", "width": 1.5}, "xref": "x", "yref": "y"}
+    rect = {"type": "rect",   "line": {"color": "#aaaaaa", "width": 1.5}, "fillcolor": "rgba(0,0,0,0)", "xref": "x", "yref": "y"}
+    circ = {"type": "circle", "line": {"color": "#aaaaaa", "width": 1.5}, "fillcolor": "rgba(0,0,0,0)", "xref": "x", "yref": "y"}
 
     def ln(x0, y0, x1, y1): return {**line, "x0": x0, "y0": y0, "x1": x1, "y1": y1}
     def bx(x0, y0, x1, y1): return {**rect, "x0": x0, "y0": y0, "x1": x1, "y1": y1}
@@ -704,7 +705,7 @@ def _render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map:
 
     show_arrows = st.checkbox("Show direction arrows", value=True, key="pm_arrows")
 
-    palette = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd", "#8c564b"]
+    palette = [_BRAND_PURPLE, _BRAND_ORANGE, _BRAND_AMBER, "#222222", "#aaaaaa", "#555555"]
     # Colour by team when more than one team is present in the (already-filtered) data
     num_teams = plot_df["team_name"].nunique() if has_teams else 0
     colour_by_team = num_teams > 1
@@ -807,18 +808,18 @@ def _render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map:
             x=grp["startX"], y=grp["startY"], mode="markers", name=str(label),
             marker={"color": colour, "size": 9, "line": {"color": "white", "width": 1}},
             customdata=grp[custom_cols].values, hovertemplate=hover_tmpl,
-            hoverlabel={"bgcolor": "#ffffff", "bordercolor": "#333333", "font": {"size": 12}},
+            hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": "#9E07AE", "font": {"size": 12}},
         ))
 
     fig.update_layout(
-        height=700, plot_bgcolor="white", paper_bgcolor="white",
+        height=700, plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
         margin={"l": 10, "r": 10, "t": 60, "b": 10},
         xaxis={"range": [-4, 104], "showgrid": False, "zeroline": False, "showticklabels": False, "scaleanchor": "y", "scaleratio": 105 / 68},
         yaxis={"range": [-4, 104], "showgrid": False, "zeroline": False, "showticklabels": False},
         showlegend=colour_by_team,
-        legend={"x": 0.01, "y": 0.99, "bgcolor": "rgba(255,255,255,0.7)"},
-        title={"text": f"{len(plot_df)} run(s) plotted", "font": {"size": 13, "color": "#333333"}, "x": 0.5},
-        hoverlabel={"bgcolor": "#ffffff", "bordercolor": "#333333", "font": {"size": 12, "color": "#000000"}, "align": "left", "namelength": 0},
+        legend={"x": 0.01, "y": 0.99, "bgcolor": "rgba(0,0,0,0.6)", "font": {"color": "#f0f0f0"}},
+        title={"text": f"{len(plot_df)} run(s) plotted", "font": {"size": 13, "color": "#f0f0f0"}, "x": 0.5},
+        hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": "#9E07AE", "font": {"size": 12, "color": "#f0f0f0"}, "align": "left", "namelength": 0},
         hovermode="closest",
     )
     st.plotly_chart(fig, use_container_width=True, key="runs_pitch_map")
@@ -863,7 +864,7 @@ def _pitch_zone_selector(key_prefix: str, has_start: bool = True, has_end: bool 
             fig.add_shape(type="rect", x0=ex_range[0], y0=ey_range[0], x1=ex_range[1], y1=ey_range[1],
                           xref="x", yref="y", fillcolor="rgba(220,50,30,0.18)", line={"color": "#dc321e", "width": 2})
         fig.update_layout(
-            height=260, plot_bgcolor="white", paper_bgcolor="white",
+            height=260, plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
             margin={"l": 2, "r": 2, "t": 2, "b": 2},
             xaxis={"range": [-2, 102], "showgrid": False, "zeroline": False, "showticklabels": False, "scaleanchor": "y", "scaleratio": 105 / 68},
             yaxis={"range": [-2, 102], "showgrid": False, "zeroline": False, "showticklabels": False},
@@ -1608,7 +1609,20 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
                 result_cols.append("initiatorPlayerId")
         result_cols = [c for c in result_cols if c in filtered.columns]
 
-        display_df = filtered[result_cols].reset_index(drop=True)
+        display_df = filtered[result_cols].reset_index(drop=True).copy()
+
+        # Format startTime / endTime as mm:ss for readability (display only —
+        # filtered retains raw milliseconds for video playback)
+        def _ms_to_mmss_phase(val) -> str:
+            try:
+                total_s = int(float(val)) // 1000
+                return f"{total_s // 60}:{total_s % 60:02d}"
+            except (TypeError, ValueError):
+                return str(val)
+
+        for _tc in ("startTime", "endTime"):
+            if _tc in display_df.columns:
+                display_df[_tc] = display_df[_tc].apply(_ms_to_mmss_phase)
 
         st.caption("👆 Click a row to select it, then press **▶ Play Video** below.")
         table_selection = st.dataframe(
@@ -1631,13 +1645,7 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
             st.info("Click a row in the table above to select a phase, then press ▶ Play Video.")
         else:
             _sel_row = display_df.iloc[selected_row_idx]
-            _start_ms = _sel_row.get("startTime", 0)
-            try:
-                _total_s = int(float(_start_ms)) // 1000
-                _minute, _second = _total_s // 60, _total_s % 60
-                _time_str = f"Starting at {_minute}:{_second:02d} in period {_sel_row.get('periodId', '')}"
-            except (TypeError, ValueError):
-                _time_str = ""
+            _time_str = f"Starting at {_sel_row.get('startTime', '')} in period {_sel_row.get('periodId', '')}"
             st.success(f"Selected: row {selected_row_idx} — **{_sel_row.get('team_name', '')}** — {_time_str}")
         vid_c1, vid_c2 = st.columns(2)
         with vid_c1:
@@ -2361,9 +2369,206 @@ def _sidebar_local_mode() -> None:
             st.error("No data could be loaded from the selected games.")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Brand colours & header
+# ──────────────────────────────────────────────────────────────────────────────
+
+_BRAND_PRIMARY   = "#222222"
+_BRAND_PURPLE    = "#9E07AE"
+_BRAND_AMBER     = "#FAA51A"
+_BRAND_ORANGE    = "#F06424"
+
+_LOGOS_DIR = _REPO_ROOT / "logos"
+_LOGO_DARK  = _LOGOS_DIR / "opta-ai-logo_white.png"   # white logo → shown on dark banner
+_LOGO_LIGHT = _LOGOS_DIR / "opta-ai-logo_black.png"   # black logo → fallback
+
+
+def _logo_b64(path: Path) -> str | None:
+    """Return a data-URI string for the logo at *path*, or None if missing."""
+    try:
+        data = path.read_bytes()
+        return "data:image/png;base64," + base64.b64encode(data).decode()
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def _render_header() -> None:
+    """Inject brand CSS and render the top banner with logo + app title."""
+    logo_uri = _logo_b64(_LOGO_DARK) or _logo_b64(_LOGO_LIGHT) or ""
+    logo_html = (
+        f'<img src="{logo_uri}" alt="Opta AI" style="height:44px;display:block;">'
+        if logo_uri else ""
+    )
+
+    st.markdown(
+        f"""
+<style>
+/* ── Dark base ────────────────────────────────────────────────── */
+html, body,
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+[data-testid="block-container"] {{
+    background-color: #000000 !important;
+    color: #f0f0f0 !important;
+}}
+
+/* ── Sidebar ─────────────────────────────────────────────────── */
+section[data-testid="stSidebar"] {{
+    background-color: #0d0d0d !important;
+}}
+section[data-testid="stSidebar"] * {{
+    color: #f0f0f0 !important;
+}}
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {{
+    color: {_BRAND_PURPLE} !important;
+}}
+
+/* ── Top banner ───────────────────────────────────────────────── */
+.brand-header {{
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    background: #000000;
+    padding: 14px 28px;
+    border-radius: 8px;
+    margin-bottom: 18px;
+    border-bottom: 3px solid {_BRAND_PURPLE};
+}}
+.brand-header-title {{
+    color: #ffffff;
+    font-size: 1.45rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    line-height: 1.2;
+    margin: 0;
+}}
+.brand-header-sub {{
+    color: {_BRAND_AMBER};
+    font-size: 0.82rem;
+    font-weight: 500;
+    margin: 0;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}}
+
+/* ── Expanders ───────────────────────────────────────────────── */
+[data-testid="stExpander"] {{
+    background-color: #0d0d0d !important;
+    border: 1px solid #2a2a2a !important;
+    border-radius: 6px !important;
+}}
+[data-testid="stExpander"] summary {{
+    color: #f0f0f0 !important;
+}}
+
+/* ── Inputs, selects, text areas ─────────────────────────────── */
+input, textarea, select,
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-testid="stSelectbox"] div[data-baseweb="select"] {{
+    background-color: #1a1a1a !important;
+    color: #f0f0f0 !important;
+    border-color: #333333 !important;
+}}
+
+/* ── Multiselect ─────────────────────────────────────────────── */
+[data-testid="stMultiSelect"] div[data-baseweb="select"] {{
+    background-color: #1a1a1a !important;
+}}
+[data-baseweb="tag"] {{
+    background-color: {_BRAND_PURPLE} !important;
+    color: #ffffff !important;
+}}
+
+/* ── Dataframes / tables ─────────────────────────────────────── */
+[data-testid="stDataFrame"],
+[data-testid="stDataFrame"] iframe,
+.stDataFrame {{
+    background-color: #0d0d0d !important;
+}}
+
+/* ── Tabs ────────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] {{
+    background-color: #000000 !important;
+    border-bottom: 1px solid #2a2a2a !important;
+}}
+.stTabs [data-baseweb="tab"] {{
+    color: #aaaaaa !important;
+}}
+.stTabs [aria-selected="true"] {{
+    color: {_BRAND_PURPLE} !important;
+    border-bottom-color: {_BRAND_PURPLE} !important;
+}}
+
+/* ── Primary buttons ─────────────────────────────────────────── */
+.stButton > button[kind="primary"] {{
+    background-color: {_BRAND_PURPLE} !important;
+    border-color:     {_BRAND_PURPLE} !important;
+    color: #ffffff !important;
+}}
+.stButton > button[kind="primary"]:hover {{
+    background-color: {_BRAND_ORANGE} !important;
+    border-color:     {_BRAND_ORANGE} !important;
+}}
+
+/* ── Secondary buttons ───────────────────────────────────────── */
+.stButton > button[kind="secondary"] {{
+    background-color: #1a1a1a !important;
+    border-color: #444444 !important;
+    color: #f0f0f0 !important;
+}}
+.stButton > button[kind="secondary"]:hover {{
+    border-color: {_BRAND_PURPLE} !important;
+    color: {_BRAND_PURPLE} !important;
+}}
+
+/* ── Info / warning / success / error boxes ──────────────────── */
+[data-testid="stAlert"] {{
+    background-color: #1a1a1a !important;
+    border-radius: 6px !important;
+}}
+
+/* ── Metrics ─────────────────────────────────────────────────── */
+[data-testid="stMetric"] {{
+    background-color: #0d0d0d !important;
+    border-radius: 6px !important;
+    padding: 8px !important;
+}}
+
+/* ── Progress / spinner ──────────────────────────────────────── */
+.stProgress > div > div > div {{
+    background-color: {_BRAND_PURPLE} !important;
+}}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+::-webkit-scrollbar-track {{ background: #000000; }}
+::-webkit-scrollbar-thumb {{ background: #333333; border-radius: 3px; }}
+::-webkit-scrollbar-thumb:hover {{ background: {_BRAND_PURPLE}; }}
+</style>
+
+<div class="brand-header">
+    {logo_html}
+    <div>
+        <p class="brand-header-sub">Stats Perform · Opta</p>
+        <p class="brand-header-title">Phases of Play – Feed Analysis</p>
+    </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def main():
-    st.set_page_config(page_title="Phases of Play – Feed Analysis", layout="wide")
-    st.title("⚽ Phases of Play – Feed Analysis")
+    st.set_page_config(
+        page_title="Phases of Play – Feed Analysis",
+        layout="wide",
+        page_icon=str(_LOGO_LIGHT) if _LOGO_LIGHT.exists() else "⚽",
+    )
+    _render_header()
 
     # ── Sidebar ───────────────────────────────────────────────────────────
     with st.sidebar:
