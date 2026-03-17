@@ -752,6 +752,8 @@ def _load_game(game_meta: dict) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
 
 def _opta_pitch_shapes() -> list[dict]:
     """Plotly shapes for an Opta 0-100 x 0-100 pitch (105m × 68m)."""
+    import math as _math
+
     line = {"type": "line",   "line": {"color": "#aaaaaa", "width": 1.5}, "xref": "x", "yref": "y"}
     rect = {"type": "rect",   "line": {"color": "#aaaaaa", "width": 1.5}, "fillcolor": "rgba(0,0,0,0)", "xref": "x", "yref": "y"}
     circ = {"type": "circle", "line": {"color": "#aaaaaa", "width": 1.5}, "fillcolor": "rgba(0,0,0,0)", "xref": "x", "yref": "y"}
@@ -769,7 +771,36 @@ def _opta_pitch_shapes() -> list[dict]:
     cc_rx = ox(9.15);  cc_ry = oy(9.15);  cc_cx = 50.0;  cc_cy = 50.0
     arc_rx = ox(9.15); arc_ry = oy(9.15)
 
-    return [
+    # ── Penalty arcs: only the portion outside the penalty box ────────────
+    # Compute the angle range where the ellipse is outside x = pa_d (left goal).
+    # Parametric ellipse: x = ps_x + arc_rx*cos(t),  y = 50 + arc_ry*sin(t)
+    # Outside when x >= pa_d  →  cos(t) >= (pa_d - ps_x) / arc_rx
+    _cos_lim = (pa_d - ps_x) / arc_rx          # ≈ 0.601
+    _t_lim = _math.acos(min(1.0, _cos_lim))    # ≈ 0.925 rad ≈ 53°
+    # The outside arc spans from -_t_lim to +_t_lim (passing through t=0).
+
+    _ARC_N = 40  # number of line segments per arc
+    def _arc_segments(cx: float, sign: float) -> list[dict]:
+        """Return line-segment shapes for the penalty arc centred at (cx, 50).
+
+        *sign* = +1 for left-goal arc (bulges rightward),
+                 -1 for right-goal arc (bulges leftward).
+        """
+        segs: list[dict] = []
+        for i in range(_ARC_N):
+            t0 = -_t_lim + (2 * _t_lim) * i / _ARC_N
+            t1 = -_t_lim + (2 * _t_lim) * (i + 1) / _ARC_N
+            x0 = cx + sign * arc_rx * _math.cos(t0)
+            y0 = 50.0 + arc_ry * _math.sin(t0)
+            x1 = cx + sign * arc_rx * _math.cos(t1)
+            y1 = 50.0 + arc_ry * _math.sin(t1)
+            segs.append(ln(x0, y0, x1, y1))
+        return segs
+
+    left_arc  = _arc_segments(ps_x, +1.0)        # bulges right
+    right_arc = _arc_segments(100.0 - ps_x, -1.0) # bulges left
+
+    shapes = [
         bx(0, 0, 100, 100),
         ln(50, 0, 50, 100),
         cl(cc_cx - cc_rx, cc_cy - cc_ry, cc_cx + cc_rx, cc_cy + cc_ry),
@@ -777,14 +808,15 @@ def _opta_pitch_shapes() -> list[dict]:
         bx(0, pa_y0, pa_d, pa_y1),
         bx(0, sb_y0, sb_d, sb_y1),
         ln(ps_x - 0.3, 50, ps_x + 0.3, 50),
-        cl(ps_x - arc_rx, cc_cy - arc_ry, ps_x + arc_rx, cc_cy + arc_ry),
+        *left_arc,
         bx(100 - pa_d, pa_y0, 100, pa_y1),
         bx(100 - sb_d, sb_y0, 100, sb_y1),
         ln(100 - ps_x - 0.3, 50, 100 - ps_x + 0.3, 50),
-        cl(100 - ps_x - arc_rx, cc_cy - arc_ry, 100 - ps_x + arc_rx, cc_cy + arc_ry),
+        *right_arc,
         bx(-gl_d, gl_y0, 0, gl_y1),
         bx(100, gl_y0, 100 + gl_d, gl_y1),
     ]
+    return shapes
 
 
 # ──────────────────────────────────────────────────────────────────────────────
