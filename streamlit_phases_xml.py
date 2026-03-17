@@ -181,6 +181,28 @@ def load_squad_map(competition_id: str) -> dict[str, str]:
 
 
 @st.cache_data(show_spinner=False)
+def load_jersey_map(competition_id: str) -> dict[str, str]:
+    """Load squad_lists.json and return a playerId → shirtNumber mapping."""
+    squad_path = _FEEDS_BASE / competition_id / "squad_lists.json"
+    if not squad_path.exists():
+        return {}
+    try:
+        with open(squad_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+
+    jersey: dict[str, str] = {}
+    for squad_entry in data.get("squad", []):
+        for person in squad_entry.get("person", []):
+            pid   = person.get("id", "")
+            shirt = person.get("shirtNumber")
+            if pid and shirt is not None:
+                jersey[pid] = str(shirt)
+    return jersey
+
+
+@st.cache_data(show_spinner=False)
 def load_team_squad_map(competition_id: str) -> dict[str, dict]:
     """Return contestantId → {name, player_ids} from squad_lists.json.
 
@@ -314,7 +336,10 @@ def parse_phases_xml(file_bytes: bytes) -> tuple[dict, pd.DataFrame]:
 
         # Overload summary — present when the phase contains an overload
         overload_el = phase.find("overloadSummary")
-        row["containsOverload"] = overload_el is not None and len(list(overload_el)) > 0
+        ol_children = list(overload_el) if overload_el is not None else []
+        row["containsOverload"] = len(ol_children) > 0
+        ol_types = sorted({o.get("overloadType", "") for o in ol_children if o.get("overloadType")})
+        row["overloadTypes"] = ",".join(ol_types) if ol_types else ""
 
         rows.append(row)
 
@@ -432,16 +457,38 @@ def parse_phases_json(data: dict) -> tuple[dict, pd.DataFrame]:
     description = mi.get("description", "")
 
     contestant_map: dict[str, str] = {}
+    contestant_position: dict[str, str] = {}   # contestantId → "home" | "away"
     for c in mi.get("contestant", []):
         contestant_map[c.get("id", "")] = c.get("name", c.get("officialName", ""))
+        pos = c.get("position", "")
+        if pos:
+            contestant_position[c.get("id", "")] = pos
+
+    # Extract goal events (used for game-state calculations)
+    ld  = data.get("liveData", {})
+    goal_events: list[dict] = []
+    for g in ld.get("goal", []):
+        tms = g.get("timeMinSec", "0:00")
+        parts = tms.split(":")
+        try:
+            goal_ms = (int(parts[0]) * 60 + int(parts[1])) * 1000
+        except (ValueError, IndexError):
+            goal_ms = 0
+        goal_events.append({
+            "time_ms":   goal_ms,
+            "periodId":  g.get("periodId"),
+            "homeScore": int(g.get("homeScore", 0)),
+            "awayScore": int(g.get("awayScore", 0)),
+        })
+    goal_events.sort(key=lambda x: x["time_ms"])
 
     match_info = {
-        "match_id":       match_id,
-        "description":    description,
-        "contestant_map": contestant_map,
+        "match_id":              match_id,
+        "description":           description,
+        "contestant_map":        contestant_map,
+        "contestant_position":   contestant_position,
+        "goal_events":           goal_events,
     }
-
-    ld  = data.get("liveData", {})
     pbp = ld.get("phaseByPhase", {})
     phases_raw = pbp.get("phase", [])
 
@@ -488,7 +535,13 @@ def parse_phases_json(data: dict) -> tuple[dict, pd.DataFrame]:
 
         # Overload summary — present when the phase contains an overload
         overload = phase.get("overloadSummary", {})
-        row["containsOverload"] = bool(overload and overload.get("overload"))
+        overload_list = overload.get("overload", []) if isinstance(overload, dict) else []
+        if isinstance(overload_list, dict):
+            overload_list = [overload_list]
+        row["containsOverload"] = bool(overload_list)
+        # Collect unique overload types (e.g. "Wide", "Central")
+        ol_types = sorted({o.get("overloadType", "") for o in overload_list if o.get("overloadType")})
+        row["overloadTypes"] = ",".join(ol_types) if ol_types else ""
 
         rows.append(row)
 
@@ -598,6 +651,68 @@ def parse_runs_json(data: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Game-state calculation
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _compute_game_state(
+    phases_df: pd.DataFrame,
+    match_info: dict,
+) -> pd.DataFrame:
+    """Add a ``game_state`` column to *phases_df*.
+
+    ``game_state`` is the goal-difference from the perspective of the
+    **possessing** team at the moment each phase starts.  e.g. +1 means
+    the possessing team is 1 goal ahead, -2 means 2 goals behind.
+
+    Uses ``goal_events`` and ``contestant_position`` from *match_info*
+    (populated by ``parse_phases_json``).  When no goal data is available
+    every phase is treated as 0-0.
+    """
+    goal_events = match_info.get("goal_events", [])
+    contestant_position = match_info.get("contestant_position", {})
+
+    # Build {contestantId: "home"/"away"} — need this to know sign of diff
+    home_ids = {cid for cid, pos in contestant_position.items() if pos == "home"}
+    away_ids = {cid for cid, pos in contestant_position.items() if pos == "away"}
+
+    if phases_df.empty:
+        return phases_df
+
+    df = phases_df.copy()
+
+    if not goal_events:
+        df["game_state"] = 0
+        return df
+
+    # Sorted goal timeline: [(time_ms, homeScore, awayScore), …]
+    goal_tl = [(g["time_ms"], g["homeScore"], g["awayScore"]) for g in goal_events]
+
+    def _state_for_row(start_time_ms: int, contestant_id: str) -> int:
+        """Return goal-difference from the perspective of *contestant_id*."""
+        home_score, away_score = 0, 0
+        for g_time, g_home, g_away in goal_tl:
+            if g_time <= start_time_ms:
+                home_score, away_score = g_home, g_away
+            else:
+                break
+        if contestant_id in home_ids:
+            return home_score - away_score
+        elif contestant_id in away_ids:
+            return away_score - home_score
+        return 0   # fallback (unknown position)
+
+    df["game_state"] = df.apply(
+        lambda r: _state_for_row(
+            int(r.get("startTime", 0)),
+            str(r.get("possessionContestantId", "")),
+        ),
+        axis=1,
+    )
+    return df
+
+
 def _load_game(game_meta: dict) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     """Load and parse a single game's phases + runs JSON files.
 
@@ -610,6 +725,9 @@ def _load_game(game_meta: dict) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
 
     match_info, phases_df = parse_phases_json(phases_data)
     runs_df = parse_runs_json(runs_data)
+
+    # Compute game state (goal difference from possessing team's perspective)
+    phases_df = _compute_game_state(phases_df, match_info)
 
     # Tag each row with game context for multi-game merges
     game_id = game_meta["game_id"]
@@ -1201,10 +1319,12 @@ def _compute_runs_result(
     return result_df
 
 
-def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, match_info: dict, squad_map: dict | None = None):
+def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, match_info: dict, squad_map: dict | None = None, jersey_map: dict | None = None):
     """List all runs that occur during phases matching phaseSummary and run-level criteria."""
     if squad_map is None:
         squad_map = {}
+    if jersey_map is None:
+        jersey_map = {}
     st.subheader("🏃 Runs Search")
     st.markdown("Use the **Phase Criteria** expander to choose which phases to search within, then open **Run Criteria** to refine by individual run properties.")
 
@@ -1434,6 +1554,14 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
             display_cols.append("playerId")
         display_cols = [c for c in display_cols if c in result_df.columns]
 
+        # Add jersey number column derived from jersey_map
+        if jersey_map and "playerId" in result_df.columns:
+            result_df = result_df.copy()
+            result_df["jersey_number"] = result_df["playerId"].map(
+                lambda x: jersey_map.get(str(x), "") if pd.notna(x) else ""
+            )
+            display_cols.append("jersey_number")
+
         # Format time columns as mm:ss for display
         ind_display_df = result_df[display_cols].reset_index(drop=True).copy()
         def _ms_to_mmss_run(val) -> str:
@@ -1586,10 +1714,12 @@ def _analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, matc
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map: dict[str, str] | None = None):
+def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map: dict[str, str] | None = None, jersey_map: dict[str, str] | None = None):
     """Merged Phase Search + Phase Analysis: shared filters, two result views."""
     if squad_map is None:
         squad_map = {}
+    if jersey_map is None:
+        jersey_map = {}
     st.subheader("📊 Phase Analysis")
     st.markdown(
         "Open **Filters** to narrow phases by criteria, "
@@ -1684,10 +1814,10 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
                 st.caption("In sequence mode **True** = at least one of the 2 phases satisfies the condition. **False** = neither phase satisfies it.")
             pa_bool_choices: dict[str, str] = {}
             ao_left, ao_right = st.columns(2)
+            # Shots & Goal filters
             for idx, (col_key, lbl, widget_key) in enumerate([
                 ("includesShots",   "Includes Shots",    "pa_shots_filter"),
                 ("includesGoal",    "Includes Goal",     "pa_goal_filter"),
-                ("containsOverload","Contains Overload", "pa_overload_filter"),
             ]):
                 if col_key not in phases_df.columns:
                     continue
@@ -1695,6 +1825,73 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
                 with container:
                     choice = st.radio(f"**{lbl}**", ["Any", "True", "False"], horizontal=True, key=widget_key)
                     pa_bool_choices[col_key] = choice
+
+            # Overload filter — with type sub-selection and pitch zone viz
+            st.markdown("---")
+            ovl_c1, ovl_c2 = st.columns(2)
+            with ovl_c1:
+                if "containsOverload" in phases_df.columns:
+                    ovl_choice = st.radio("**Contains Overload**", ["Any", "True", "False"], horizontal=True, key="pa_overload_filter")
+                    pa_bool_choices["containsOverload"] = ovl_choice
+                else:
+                    ovl_choice = "Any"
+
+            pa_overload_types: list[str] = []
+            with ovl_c2:
+                if ovl_choice == "True" and "overloadTypes" in phases_df.columns:
+                    pa_overload_types = st.multiselect(
+                        "**Overload Type**",
+                        options=["Wide", "Central"],
+                        default=["Wide", "Central"],
+                        key="pa_overload_type",
+                    )
+
+            # Pitch zone visualisation for selected overload types
+            if ovl_choice == "True" and pa_overload_types:
+                fig_ovl = go.Figure()
+                for shape in _opta_pitch_shapes():
+                    fig_ovl.add_shape(**shape)
+                if "Wide" in pa_overload_types:
+                    # Bottom wide zone: y 0–19
+                    fig_ovl.add_shape(
+                        type="rect", x0=0, y0=0, x1=100, y1=19,
+                        xref="x", yref="y",
+                        fillcolor="rgba(250,165,26,0.20)", line={"color": _BRAND_AMBER, "width": 2},
+                    )
+                    # Top wide zone: y 81–100
+                    fig_ovl.add_shape(
+                        type="rect", x0=0, y0=81, x1=100, y1=100,
+                        xref="x", yref="y",
+                        fillcolor="rgba(250,165,26,0.20)", line={"color": _BRAND_AMBER, "width": 2},
+                    )
+                    fig_ovl.add_annotation(
+                        x=50, y=9.5, text="Wide", showarrow=False,
+                        font={"color": _BRAND_AMBER, "size": 13, "family": "Barlow"},
+                    )
+                    fig_ovl.add_annotation(
+                        x=50, y=90.5, text="Wide", showarrow=False,
+                        font={"color": _BRAND_AMBER, "size": 13, "family": "Barlow"},
+                    )
+                if "Central" in pa_overload_types:
+                    fig_ovl.add_shape(
+                        type="rect", x0=0, y0=19, x1=100, y1=81,
+                        xref="x", yref="y",
+                        fillcolor="rgba(229,32,47,0.15)", line={"color": _BRAND_RED, "width": 2},
+                    )
+                    fig_ovl.add_annotation(
+                        x=50, y=50, text="Central", showarrow=False,
+                        font={"color": _BRAND_RED, "size": 13, "family": "Barlow"},
+                    )
+                fig_ovl.update_layout(
+                    height=220, plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
+                    margin={"l": 2, "r": 2, "t": 2, "b": 2},
+                    xaxis={"range": [-2, 102], "showgrid": False, "zeroline": False,
+                           "showticklabels": False, "scaleanchor": "y", "scaleratio": 105 / 68},
+                    yaxis={"range": [-2, 102], "showgrid": False, "zeroline": False,
+                           "showticklabels": False},
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_ovl, use_container_width=True, key="pa_overload_pitch")
 
         with pa_ftab_team:
             pa_tf_col1, pa_tf_col2 = st.columns(2)
@@ -1734,6 +1931,7 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
             "coord_bounds":         pa_coord_bounds,
             "ac_range_inputs":      pa_ac_range_inputs,
             "bool_choices":         pa_bool_choices,
+            "overload_types":       pa_overload_types,
             "selected_team_name":   pa_selected_team_name,
         }
 
@@ -1751,6 +1949,7 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
     pa_coord_bounds        = pa_committed["coord_bounds"]
     pa_ac_range_inputs     = pa_committed["ac_range_inputs"]
     pa_bool_choices        = pa_committed["bool_choices"]
+    pa_overload_types      = pa_committed.get("overload_types", [])
     pa_selected_team_name  = pa_committed["selected_team_name"]
 
     # ── Apply filters ─────────────────────────────────────────────────────
@@ -1780,6 +1979,16 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
                     filtered = filtered[filtered[col_key] == choice]
                 else:
                     filtered = filtered[filtered[col_key] == (choice == "True")]
+        # Overload type sub-filter (only when containsOverload == True)
+        if (pa_bool_choices.get("containsOverload") == "True"
+                and pa_overload_types
+                and "overloadTypes" in filtered.columns):
+            def _has_ovl_type(val: str) -> bool:
+                if not val:
+                    return False
+                types_in_phase = set(val.split(","))
+                return bool(types_in_phase & set(pa_overload_types))
+            filtered = filtered[filtered["overloadTypes"].apply(_has_ovl_type)]
 
     else:
         if pa_seq_first == "(select)" or not pa_seq_leads_to:
@@ -1834,6 +2043,19 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
                 return either_true if choice == "True" else not either_true
             pair_records = [pr for pr in pair_records if _pa_bool_ok(pr)]
 
+        # Overload type sub-filter in sequence mode
+        if (pa_bool_choices.get("containsOverload") == "True"
+                and pa_overload_types):
+            def _seq_ovl_type_ok(pr):
+                for pkey in ("p1", "p2"):
+                    val = pr[pkey].get("overloadTypes", "")
+                    if val:
+                        types_in_phase = set(val.split(","))
+                        if types_in_phase & set(pa_overload_types):
+                            return True
+                return False
+            pair_records = [pr for pr in pair_records if _seq_ovl_type_ok(pr)]
+
         if not pair_records:
             st.warning("No phase pairs match all the selected criteria.")
             st.stop()
@@ -1876,13 +2098,21 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
         if "team_name" in filtered.columns:
             result_cols.append("team_name")
         result_cols.extend(["phaseLabel", "periodId", "startTime", "endTime"])
-        # Show initiator player name if available
+        # Show initiator player name and jersey if available
         if "initiatorPlayerId" in filtered.columns and filtered["initiatorPlayerId"].notna().any():
             if squad_map:
+                filtered = filtered.copy()
                 filtered["initiator_name"] = filtered["initiatorPlayerId"].map(lambda x: squad_map.get(str(x), str(x)) if pd.notna(x) else "")
                 result_cols.append("initiator_name")
             else:
                 result_cols.append("initiatorPlayerId")
+            # Jersey number for initiating player from squad jersey_map
+            if jersey_map:
+                filtered = filtered if "initiator_name" in filtered.columns else filtered.copy()
+                filtered["initiator_jersey"] = filtered["initiatorPlayerId"].map(
+                    lambda x: jersey_map.get(str(x), "") if pd.notna(x) else ""
+                )
+                result_cols.append("initiator_jersey")
         result_cols = [c for c in result_cols if c in filtered.columns]
 
         display_df = filtered[result_cols].reset_index(drop=True).copy()
@@ -2213,6 +2443,223 @@ def _analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_ma
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block Analysis
+# ──────────────────────────────────────────────────────────────────────────────
+
+_BLOCK_LABELS = [
+    "Build Up against Low Block",
+    "Build Up against Medium Block",
+    "Build Up against High Block",
+]
+# Short display names (strip "Build Up against " prefix)
+_BLOCK_SHORT = {
+    "Build Up against Low Block":    "Low Block",
+    "Build Up against Medium Block": "Medium Block",
+    "Build Up against High Block":   "High Block",
+}
+# Colours for each block type
+_BLOCK_COLOURS = {
+    "Build Up against Low Block":    _BRAND_AMBER,
+    "Build Up against Medium Block": _BRAND_ORANGE,
+    "Build Up against High Block":   _BRAND_RED,
+}
+
+
+def _block_chart(
+    agg_df: pd.DataFrame,
+    team_col: str,
+    chart_type: str,
+    value_label: str,
+    chart_key: str,
+) -> None:
+    """Render a single block-proportion bar chart from a pre-aggregated DataFrame."""
+    plot_df = agg_df.copy()
+    plot_df["block_short"] = plot_df["phaseLabel"].map(_BLOCK_SHORT)
+    team_totals = agg_df.groupby(team_col)["value"].sum().rename("_team_total")
+    plot_df = plot_df.merge(team_totals, on=team_col, how="left")
+    plot_df["proportion"] = (plot_df["value"] / plot_df["_team_total"] * 100).round(1)
+
+    colour_map = {_BLOCK_SHORT[k]: v for k, v in _BLOCK_COLOURS.items()}
+    block_order = [_BLOCK_SHORT[l] for l in _BLOCK_LABELS]
+
+    if "Stacked bar" in chart_type:
+        y_col, y_label = "proportion", "% of Build Up"
+        text_col, text_fmt, bar_mode = "proportion", "%{text:.1f}%", "stack"
+    else:
+        y_col, y_label = "value", value_label
+        text_col, text_fmt, bar_mode = "value", "%{text}", "group"
+
+    fig = px.bar(
+        plot_df,
+        x=team_col, y=y_col,
+        color="block_short", barmode=bar_mode, text=text_col,
+        color_discrete_map=colour_map,
+        category_orders={"block_short": block_order},
+        labels={team_col: "Team", y_col: y_label, "block_short": "Block Type"},
+        height=420,
+    )
+    fig.update_traces(texttemplate=text_fmt, textposition="inside")
+    fig.update_layout(
+        plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
+        font={"color": "#f0f0f0"},
+        legend={"title": {"text": "Block Type"}, "bgcolor": "rgba(0,0,0,0.5)"},
+        xaxis={"title": "Team", "color": "#f0f0f0", "gridcolor": "#222"},
+        yaxis={"title": y_label, "color": "#f0f0f0", "gridcolor": "#222"},
+        margin={"l": 10, "r": 20, "t": 40, "b": 10},
+    )
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+
+def _analysis_block_analysis(phases_df: pd.DataFrame, match_info: dict) -> None:
+    """Show block-faced and block-deployed proportions for each team's Build Up phases."""
+    st.subheader("🧱 Block Analysis")
+
+    # ── Filter to Build Up phases only ───────────────────────────────────
+    build_up_df = phases_df[phases_df["phaseLabel"].isin(_BLOCK_LABELS)].copy()
+
+    if build_up_df.empty:
+        st.warning("No Build Up phases found in the loaded data.")
+        return
+
+    contestant_map = match_info.get("contestant_map", {})
+    all_contestant_ids = sorted(
+        phases_df["possessionContestantId"].dropna().unique()
+        if "possessionContestantId" in phases_df.columns else []
+    )
+
+    # Add possessing team name
+    if "team_name" not in build_up_df.columns and contestant_map:
+        build_up_df["team_name"] = build_up_df["possessionContestantId"].map(contestant_map)
+    team_col = "team_name" if "team_name" in build_up_df.columns else "possessionContestantId"
+
+    # Add defending team: in a two-team match the opponent is the other contestant.
+    # Works for multi-game data too — opponents are scoped per game + period.
+    if len(all_contestant_ids) == 2:
+        cid_a, cid_b = all_contestant_ids
+        build_up_df["defending_id"] = build_up_df["possessionContestantId"].map(
+            {cid_a: cid_b, cid_b: cid_a}
+        )
+    else:
+        # For multi-game data, find the other team in the same game/period
+        game_key = "game_id" if "game_id" in build_up_df.columns else None
+        if game_key:
+            game_teams = (
+                phases_df.groupby(game_key)["possessionContestantId"]
+                .apply(lambda s: sorted(s.dropna().unique()))
+                .to_dict()
+            )
+            def _opponent(row):
+                teams_in_game = game_teams.get(row[game_key], [])
+                others = [t for t in teams_in_game if t != row["possessionContestantId"]]
+                return others[0] if others else None
+            build_up_df["defending_id"] = build_up_df.apply(_opponent, axis=1)
+        else:
+            build_up_df["defending_id"] = None
+
+    if contestant_map:
+        build_up_df["defending_name"] = build_up_df["defending_id"].map(contestant_map)
+    defending_col = "defending_name" if "defending_name" in build_up_df.columns else "defending_id"
+
+    has_duration = "phaseDuration" in build_up_df.columns and build_up_df["phaseDuration"].notna().any()
+
+    # ── Game state (goal difference from the relevant team's perspective) ─
+    has_game_state = "game_state" in build_up_df.columns and build_up_df["game_state"].notna().any()
+    if has_game_state:
+        # game_state on the phase is from the *possessing* team.
+        # For "Block Deployed" the relevant team is the defender → negate.
+        build_up_df["_gs_faced"]    = build_up_df["game_state"].astype(int)
+        build_up_df["_gs_deployed"] = -build_up_df["game_state"].astype(int)
+
+    # ── Filters ────────────────────────────────────────────────────────────
+    with st.expander("🔍 Filters", expanded=True):
+        ctrl_c1, ctrl_c2, ctrl_c3 = st.columns(3)
+        with ctrl_c1:
+            view_choice = st.radio(
+                "**View**",
+                ["Block Deployed", "Block Faced"],
+                horizontal=True,
+                key="ba_view",
+            )
+        with ctrl_c2:
+            _metric_options = ["Time (seconds)", "Phase count"] if has_duration else ["Phase count"]
+            metric_choice = st.radio(
+                "**Metric**",
+                _metric_options,
+                horizontal=True,
+                key="ba_metric",
+            )
+        with ctrl_c3:
+            chart_type = st.radio(
+                "**Chart type**",
+                ["Stacked bar (proportion)", "Grouped bar (absolute)"],
+                horizontal=True,
+                key="ba_chart_type",
+            )
+
+        # ── Game State filter ─────────────────────────────────────────────
+        if has_game_state:
+            gs_col = "_gs_deployed" if view_choice == "Block Deployed" else "_gs_faced"
+            gs_min = int(build_up_df[gs_col].min())
+            gs_max = int(build_up_df[gs_col].max())
+            if gs_min < gs_max:
+                gs_range = st.slider(
+                    "**Game State** (goal difference from selected team's perspective)",
+                    min_value=gs_min,
+                    max_value=gs_max,
+                    value=(gs_min, gs_max),
+                    step=1,
+                    key="ba_game_state",
+                )
+                build_up_df = build_up_df[
+                    (build_up_df[gs_col] >= gs_range[0]) & (build_up_df[gs_col] <= gs_range[1])
+                ]
+                if build_up_df.empty:
+                    st.warning("No Build Up phases match the selected game state range.")
+                    return
+            else:
+                st.caption(f"Game State: all phases at **{gs_min}**")
+
+    use_duration = metric_choice == "Time (seconds)" and has_duration
+
+    def _build_agg(group_col: str) -> tuple[pd.DataFrame, str]:
+        """Aggregate build_up_df by group_col + phaseLabel."""
+        if use_duration:
+            df = (
+                build_up_df
+                .groupby([group_col, "phaseLabel"], dropna=False)
+                .agg(value=("phaseDuration", "sum"))
+                .reset_index()
+            )
+            df["value"] = (df["value"] / 1000.0).round(1)
+            label = "Time (s)"
+        else:
+            df = (
+                build_up_df
+                .groupby([group_col, "phaseLabel"], dropna=False)
+                .agg(value=("phase_id", "count"))
+                .reset_index()
+            )
+            label = "Phase Count"
+        df = df.rename(columns={group_col: "team"})
+        df["team"] = df["team"].astype(str)
+        df = df[df["team"].notna() & (df["team"] != "None") & (df["team"].str.strip() != "")]
+        return df, label
+
+    if view_choice == "Block Deployed":
+        st.markdown("#### Block Deployed")
+        st.caption("Proportion of time each team deployed each block type while the opponent was in Build Up.")
+        deployed_df, value_label = _build_agg(defending_col)
+        deployed_df = deployed_df.rename(columns={"team": defending_col})
+        _block_chart(deployed_df, defending_col, chart_type, value_label, "ba_deployed_chart")
+    else:
+        st.markdown("#### Block Faced")
+        st.caption("Proportion of each team's own Build Up phases spent against each block type.")
+        faced_df, value_label = _build_agg(team_col)
+        faced_df = faced_df.rename(columns={"team": team_col})
+        _block_chart(faced_df, team_col, chart_type, value_label, "ba_faced_chart")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main app
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -2246,6 +2693,23 @@ def _parse_squad_json(data: dict) -> dict[str, str]:
     return player_map
 
 
+def _parse_squad_jersey_json(data: dict) -> dict[str, str]:
+    """Parse a squad_lists JSON dict into a playerId → shirtNumber mapping."""
+    jersey: dict[str, str] = {}
+    for squad_entry in data.get("squad", []):
+        for person in squad_entry.get("person", []):
+            pid   = person.get("id", "")
+            shirt = person.get("shirtNumber")
+            if pid and shirt is not None:
+                jersey[pid] = str(shirt)
+    for person in data.get("person", []):
+        pid   = person.get("id", "")
+        shirt = person.get("shirtNumber")
+        if pid and shirt is not None:
+            jersey[pid] = str(shirt)
+    return jersey
+
+
 def _load_game_from_bytes(phases_bytes: bytes, runs_bytes: bytes, game_label: str) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     """Parse phases + runs from raw JSON bytes (in-memory upload path).
 
@@ -2256,6 +2720,9 @@ def _load_game_from_bytes(phases_bytes: bytes, runs_bytes: bytes, game_label: st
 
     match_info, phases_df = parse_phases_json(phases_data)
     runs_df = parse_runs_json(runs_data)
+
+    # Compute game state (goal difference from possessing team's perspective)
+    phases_df = _compute_game_state(phases_df, match_info)
 
     game_id = match_info.get("match_id", game_label)
     desc    = match_info.get("description", game_label)
@@ -2471,7 +2938,8 @@ def _sidebar_upload_mode() -> None:
         return
 
     # ── Parse squad ───────────────────────────────────────────────────────
-    squad_map: dict[str, str] = {}
+    squad_map:  dict[str, str] = {}
+    jersey_map: dict[str, str] = {}
     if has_squad:
         try:
             raw_squad = squad_bytes_map["squad"]
@@ -2487,7 +2955,9 @@ def _sidebar_upload_mode() -> None:
                     continue
             if squad_text is None:
                 squad_text = raw_squad.decode("utf-8", errors="replace")
-            squad_map = _parse_squad_json(json.loads(squad_text))
+            squad_json = json.loads(squad_text)
+            squad_map  = _parse_squad_json(squad_json)
+            jersey_map = _parse_squad_jersey_json(squad_json)
         except json.JSONDecodeError as exc:
             st.warning(f"squad_lists.json is not valid JSON and will be ignored: {exc}")
         except Exception as exc:
@@ -2540,6 +3010,7 @@ def _sidebar_upload_mode() -> None:
         "contestant_map": combined_map,
     }
     st.session_state["squad_map"]       = squad_map
+    st.session_state["jersey_map"]      = jersey_map
     st.session_state["loaded_game_ids"] = loaded_labels
     st.session_state.pop("runs_committed", None)
     st.session_state.pop("pa_committed", None)
@@ -2563,7 +3034,8 @@ def _sidebar_local_mode() -> None:
         key="selected_competition",
     )
 
-    squad_map: dict[str, str] = load_squad_map(selected_comp)
+    squad_map:  dict[str, str] = load_squad_map(selected_comp)
+    jersey_map: dict[str, str] = load_jersey_map(selected_comp)
     all_games = discover_available_games(selected_comp)
 
     if not all_games:
@@ -2635,6 +3107,7 @@ def _sidebar_local_mode() -> None:
                 "contestant_map": combined_map,
             }
             st.session_state["squad_map"]       = squad_map
+            st.session_state["jersey_map"]      = jersey_map
             st.session_state["loaded_game_ids"] = selected_ids
             st.session_state.pop("runs_committed", None)
             st.session_state.pop("pa_committed", None)
@@ -3021,32 +3494,23 @@ def main():
     phases_df: pd.DataFrame = st.session_state["phases_df"]
     runs_df:   pd.DataFrame = st.session_state["runs_df"]
     match_info: dict        = st.session_state["match_info"]
-    squad_map: dict[str, str] = st.session_state.get("squad_map", {})
+    squad_map:  dict[str, str] = st.session_state.get("squad_map", {})
+    jersey_map: dict[str, str] = st.session_state.get("jersey_map", {})
 
-    loaded_ids = st.session_state.get("loaded_game_ids", [])
-    if len(loaded_ids) == 1:
-        st.markdown(f"### {match_info['description']}")
-    else:
-        st.markdown(f"### {len(loaded_ids)} games loaded")
-        with st.expander("Loaded games", expanded=False):
-            for gid in loaded_ids:
-                st.write(f"• {gid}")
 
-    st.markdown(
-        f"**Total phases:** {len(phases_df):,} &nbsp;|&nbsp; "
-        f"**Total runs:** {len(runs_df):,}"
-    )
-
-    tab_runs, tab_analysis = st.tabs(["Runs Search", "Phase Analysis"])
+    tab_runs, tab_analysis, tab_block = st.tabs(["Runs Search", "Phase Analysis", "Block Analysis"])
 
     with tab_runs:
         if runs_df is None or runs_df.empty:
             st.info("No run data available for the loaded game(s).")
         else:
-            _analysis_runs_by_phase(phases_df, runs_df, match_info, squad_map)
+            _analysis_runs_by_phase(phases_df, runs_df, match_info, squad_map, jersey_map)
 
     with tab_analysis:
-        _analysis_phase_analysis(phases_df, match_info, squad_map)
+        _analysis_phase_analysis(phases_df, match_info, squad_map, jersey_map)
+
+    with tab_block:
+        _analysis_block_analysis(phases_df, match_info)
 
 
 if __name__ == "__main__":
