@@ -12,6 +12,7 @@ from src.pitch import opta_pitch_shapes, pitch_zone_selector
 from src.utils import ms_to_mmss
 
 
+@st.fragment
 def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map: dict[str, str] | None = None, jersey_map: dict[str, str] | None = None):
     """Merged Phase Search + Phase Analysis: shared filters, two result views."""
     if squad_map is None:

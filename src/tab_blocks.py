@@ -70,6 +70,7 @@ def block_chart(
     st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 
+@st.fragment
 def analysis_block_analysis(phases_df: pd.DataFrame, match_info: dict) -> None:
     """Show block-faced and block-deployed proportions for each team's Build Up phases."""
     st.subheader("🧱 Block Analysis")
@@ -100,19 +101,25 @@ def analysis_block_analysis(phases_df: pd.DataFrame, match_info: dict) -> None:
             {cid_a: cid_b, cid_b: cid_a}
         )
     else:
-        # For multi-game data, find the other team in the same game/period
+        # For multi-game data, find the other team in the same game
         game_key = "game_id" if "game_id" in build_up_df.columns else None
         if game_key:
-            game_teams = (
-                phases_df.groupby(game_key)["possessionContestantId"]
-                .apply(lambda s: sorted(s.dropna().unique()))
-                .to_dict()
+            # Vectorized opponent lookup via merge instead of row-by-row .apply()
+            _uniq = phases_df.drop_duplicates(subset=[game_key, "possessionContestantId"])
+            _game_team_pairs = (
+                _uniq.groupby(game_key)["possessionContestantId"]
+                .apply(list)
+                .reset_index(name="_all_teams")
             )
-            def _opponent(row):
-                teams_in_game = game_teams.get(row[game_key], [])
-                others = [t for t in teams_in_game if t != row["possessionContestantId"]]
-                return others[0] if others else None
-            build_up_df["defending_id"] = build_up_df.apply(_opponent, axis=1)
+            build_up_df = build_up_df.merge(_game_team_pairs, on=game_key, how="left")
+            build_up_df["defending_id"] = build_up_df.apply(
+                lambda r: next(
+                    (t for t in (r.get("_all_teams") or []) if t != r["possessionContestantId"]),
+                    None,
+                ),
+                axis=1,
+            )
+            build_up_df = build_up_df.drop(columns=["_all_teams"])
         else:
             build_up_df["defending_id"] = None
 

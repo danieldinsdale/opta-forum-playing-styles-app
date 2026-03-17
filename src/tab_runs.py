@@ -195,6 +195,7 @@ def compute_runs_result(
     return result_df
 
 
+@st.fragment
 def analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, match_info: dict, squad_map: dict | None = None, jersey_map: dict | None = None):
     """List all runs that occur during phases matching phaseSummary and run-level criteria."""
     if squad_map is None:

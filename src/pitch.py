@@ -1,6 +1,7 @@
 """Pitch drawing shapes, pitch-map rendering, and zone-selector widget."""
 from __future__ import annotations
 import math
+from functools import lru_cache
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -8,8 +9,10 @@ import streamlit as st
 from src.config import BRAND_PURPLE, BRAND_AMBER, BRAND_ORANGE, BRAND_RED
 
 
-def opta_pitch_shapes() -> list[dict]:
-    """Plotly shapes for an Opta 0-100 x 0-100 pitch (105m x 68m)."""
+@lru_cache(maxsize=1)
+def opta_pitch_shapes() -> tuple:
+    """Plotly shapes for an Opta 0-100 x 0-100 pitch (105m x 68m).
+    Cached — trig computed once then reused on every subsequent call."""
     line = {"type": "line", "line": {"color": "#aaaaaa", "width": 1.5}, "xref": "x", "yref": "y"}
     rect = {"type": "rect", "line": {"color": "#aaaaaa", "width": 1.5}, "fillcolor": "rgba(0,0,0,0)", "xref": "x", "yref": "y"}
     circ = {"type": "circle", "line": {"color": "#aaaaaa", "width": 1.5}, "fillcolor": "rgba(0,0,0,0)", "xref": "x", "yref": "y"}
@@ -45,7 +48,7 @@ def opta_pitch_shapes() -> list[dict]:
     left_arc = _arc_segments(ps_x, +1.0)
     right_arc = _arc_segments(100.0 - ps_x, -1.0)
 
-    return [
+    return tuple([
         bx(0, 0, 100, 100), ln(50, 0, 50, 100),
         cl(cc_cx - cc_rx, cc_cy - cc_ry, cc_cx + cc_rx, cc_cy + cc_ry),
         ln(cc_cx - 0.3, cc_cy, cc_cx + 0.3, cc_cy),
@@ -54,7 +57,7 @@ def opta_pitch_shapes() -> list[dict]:
         bx(100 - pa_d, pa_y0, 100, pa_y1), bx(100 - sb_d, sb_y0, 100, sb_y1),
         ln(100 - ps_x - 0.3, 50, 100 - ps_x + 0.3, 50), *right_arc,
         bx(-gl_d, gl_y0, 0, gl_y1), bx(100, gl_y0, 100 + gl_d, gl_y1),
-    ]
+    ])
 
 
 def render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map: dict[str, str] | None = None) -> None:

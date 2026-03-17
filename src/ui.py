@@ -1,6 +1,7 @@
 """Header rendering and CSS injection."""
 from __future__ import annotations
 import base64
+from functools import lru_cache
 from pathlib import Path
 import streamlit as st
 from src.config import (
@@ -13,9 +14,10 @@ LOGO_DARK = LOGOS_DIR / "opta-ai-logo_white.png"
 LOGO_LIGHT = LOGOS_DIR / "opta-ai-logo_black.png"
 
 
-def logo_b64(path: Path) -> str | None:
+@lru_cache(maxsize=4)
+def logo_b64(path: str | Path) -> str | None:
     try:
-        data = path.read_bytes()
+        data = Path(path).read_bytes()
         return "data:image/png;base64," + base64.b64encode(data).decode()
     except (FileNotFoundError, OSError):
         return None
