@@ -11,7 +11,75 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from io import BytesIO
 
+import numpy as np
 import pandas as pd
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DataFrame dtype optimiser — called after every parse to shrink memory
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Integer columns that can safely be stored as int32
+_INT32_COLS = frozenset({
+    "startTime", "endTime", "startFrame", "endFrame", "phaseDuration",
+    "game_state",
+})
+
+# Float columns that can safely be stored as float32
+_FLOAT32_COLS = frozenset({
+    "startX", "startY", "endX", "endY",
+    "duration_seconds",
+    "expectedThreat_max", "speed_max",
+    "defensiveLineBroken", "dangerous",
+    "runFollowedByTeamShot", "runFollowedByTeamGoal",
+    "averageAttackingTeamHorizontalWidth",
+    "averageAttackingTeamVerticalLength",
+    "averageDefendingTeamHorizontalWidth",
+    "averageDefendingTeamVerticalLength",
+    "averageDefensiveAreaCoverage",
+    "averageAttackingTeamHeightLastDefender",
+    "averageDefendingTeamHeightLastDefender",
+})
+
+# Low-cardinality string columns → category dtype
+_CATEGORY_COLS = frozenset({
+    "phaseLabel", "periodId", "possessionContestantId",
+    "runType", "masterLabel", "contestantId", "team_name",
+    "overloadTypes",
+})
+
+
+def _optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Down-cast numeric columns and convert low-cardinality strings to
+    ``category`` dtype to reduce memory usage.  Mutates *df* in-place and
+    returns it for convenience."""
+    if df.empty:
+        return df
+
+    for col in _INT32_COLS & set(df.columns):
+        if df[col].dtype == object:
+            continue
+        try:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int32")
+        except (ValueError, TypeError):
+            pass
+
+    for col in _FLOAT32_COLS & set(df.columns):
+        if df[col].dtype == object:
+            continue
+        try:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
+        except (ValueError, TypeError):
+            pass
+
+    for col in _CATEGORY_COLS & set(df.columns):
+        if df[col].dtype == object or str(df[col].dtype) == "string":
+            try:
+                df[col] = df[col].astype("category")
+            except (ValueError, TypeError):
+                pass
+
+    return df
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -124,6 +192,7 @@ def parse_phases_xml(file_bytes: bytes) -> tuple[dict, pd.DataFrame]:
     else:
         phases_df["duration_seconds"] = (phases_df["endTime"] - phases_df["startTime"]) / 1000.0
 
+    _optimize_dtypes(phases_df)
     return match_info, phases_df
 
 
@@ -205,7 +274,9 @@ def parse_runs_xml(file_bytes: bytes) -> pd.DataFrame:
         rows.append(row)
         elem.clear()
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    _optimize_dtypes(df)
+    return df
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -305,6 +376,28 @@ def parse_phases_json(data: dict) -> tuple[dict, pd.DataFrame]:
         ol_types = sorted({o.get("overloadType", "") for o in overload_list if o.get("overloadType")})
         row["overloadTypes"] = ",".join(ol_types) if ol_types else ""
 
+        # ── Defensive area coverage (time-weighted across sub-entries) ──
+        dcs = phase.get("defensiveCompactnessSummary", {})
+        dc_list = dcs.get("defensiveCompactness", []) if isinstance(dcs, dict) else []
+        if isinstance(dc_list, dict):
+            dc_list = [dc_list]
+        if dc_list:
+            _total_dur = 0.0
+            _weighted_sum = 0.0
+            for dc in dc_list:
+                try:
+                    _dc_start = float(dc.get("startTime", 0))
+                    _dc_end = float(dc.get("endTime", 0))
+                    _dc_area = float(dc.get("averageDefensiveAreaCoverage", 0))
+                except (ValueError, TypeError):
+                    continue
+                _dc_dur = max(_dc_end - _dc_start, 0.0)
+                if _dc_dur > 0 and _dc_area > 0:
+                    _weighted_sum += _dc_area * _dc_dur
+                    _total_dur += _dc_dur
+            if _total_dur > 0:
+                row["averageDefensiveAreaCoverage"] = _weighted_sum / _total_dur
+
         rows.append(row)
 
     phases_df = pd.DataFrame(rows)
@@ -317,6 +410,7 @@ def parse_phases_json(data: dict) -> tuple[dict, pd.DataFrame]:
     elif not phases_df.empty:
         phases_df["duration_seconds"] = (phases_df["endTime"] - phases_df["startTime"]) / 1000.0
 
+    _optimize_dtypes(phases_df)
     return match_info, phases_df
 
 
@@ -412,7 +506,9 @@ def parse_runs_json(data: dict) -> pd.DataFrame:
 
         rows.append(row)
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    _optimize_dtypes(df)
+    return df
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -428,6 +524,8 @@ def compute_game_state(
 
     ``game_state`` is the goal-difference from the perspective of the
     **possessing** team at the moment each phase starts.
+
+    Uses vectorised NumPy operations instead of row-by-row ``.apply()``.
     """
     goal_events = match_info.get("goal_events", [])
     contestant_position = match_info.get("contestant_position", {})
@@ -441,30 +539,28 @@ def compute_game_state(
     df = phases_df.copy()
 
     if not goal_events:
-        df["game_state"] = 0
+        df["game_state"] = np.int8(0)
         return df
 
-    goal_tl = [(g["time_ms"], g["homeScore"], g["awayScore"]) for g in goal_events]
+    # Build sorted goal timeline arrays for np.searchsorted
+    goal_times = np.array([g["time_ms"] for g in goal_events], dtype=np.int64)
+    home_scores = np.array([g["homeScore"] for g in goal_events], dtype=np.int32)
+    away_scores = np.array([g["awayScore"] for g in goal_events], dtype=np.int32)
 
-    def _state_for_row(start_time_ms: int, contestant_id: str) -> int:
-        home_score, away_score = 0, 0
-        for g_time, g_home, g_away in goal_tl:
-            if g_time <= start_time_ms:
-                home_score, away_score = g_home, g_away
-            else:
-                break
-        if contestant_id in home_ids:
-            return home_score - away_score
-        elif contestant_id in away_ids:
-            return away_score - home_score
-        return 0
+    start_times = df["startTime"].to_numpy(dtype=np.int64, na_value=0)
+    # searchsorted with side='right' gives index of first goal *after* start_time
+    idx = np.searchsorted(goal_times, start_times, side="right")
 
-    df["game_state"] = df.apply(
-        lambda r: _state_for_row(
-            int(r.get("startTime", 0)),
-            str(r.get("possessionContestantId", "")),
-        ),
-        axis=1,
-    )
+    # Score at each phase start = score from goal at idx-1 (or 0-0 if idx==0)
+    h_scores = np.where(idx > 0, home_scores[np.clip(idx - 1, 0, len(home_scores) - 1)], 0)
+    a_scores = np.where(idx > 0, away_scores[np.clip(idx - 1, 0, len(away_scores) - 1)], 0)
+
+    cids = df["possessionContestantId"].astype(str).values
+    is_home = np.isin(cids, list(home_ids))
+    is_away = np.isin(cids, list(away_ids))
+
+    game_state = np.where(is_home, h_scores - a_scores,
+                          np.where(is_away, a_scores - h_scores, 0))
+    df["game_state"] = game_state.astype(np.int8)
     return df
 

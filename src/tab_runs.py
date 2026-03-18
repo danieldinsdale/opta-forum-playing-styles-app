@@ -14,7 +14,7 @@ from src.pitch import render_runs_pitch_map, pitch_zone_selector
 from src.utils import ms_to_mmss
 
 
-@st.cache_data(show_spinner="Searching runs…")
+@st.cache_data(show_spinner="Searching runs…", max_entries=3)
 def compute_runs_result(
     phases_df: pd.DataFrame,
     runs_df: pd.DataFrame,
@@ -48,7 +48,7 @@ def compute_runs_result(
     )
 
     _phase_label_filter = list(selected_labels) if selected_labels else list(available_labels)
-    filtered_phases = phases_df[phases_df["phaseLabel"].isin(_phase_label_filter)].copy()
+    filtered_phases = phases_df[phases_df["phaseLabel"].isin(_phase_label_filter)]
     if includes_shots_choice != "Any" and "includesShots" in filtered_phases.columns:
         filtered_phases = filtered_phases[filtered_phases["includesShots"] == includes_shots_choice]
     if includes_goal_choice != "Any" and "includesGoal" in filtered_phases.columns:
@@ -56,51 +56,61 @@ def compute_runs_result(
     if filtered_phases.empty:
         return pd.DataFrame()
 
-    ph = filtered_phases.copy()
-    ph["_gid"]    = ph["game_id"].astype(str) if "game_id" in ph.columns else ""
-    ph["_pid"]    = ph["phase_id"].astype(str)
-    ph["_period"] = ph["periodId"].astype(str)
-    ph["_team"]   = ph["possessionContestantId"].astype(str)
-    ph["_psf"]    = ph["startFrame"].astype(int)
-    ph["_pef"]    = ph["endFrame"].astype(int)
-    ph_cols = ["_gid", "_pid", "_period", "_team", "_psf", "_pef",
-               "phaseLabel", "includesShots", "includesGoal", "startTime"]
-    ph_cols = [c for c in ph_cols if c in ph.columns]
-    ph_slim = ph[ph_cols].copy()
-    for _c in ("includesShots", "includesGoal", "startTime"):
+    # Build slim phase lookup — only the columns we need, one copy
+    ph_cols_src = ["phase_id", "periodId", "possessionContestantId",
+                   "startFrame", "endFrame", "phaseLabel", "startTime"]
+    if "game_id" in filtered_phases.columns:
+        ph_cols_src.insert(0, "game_id")
+    for _c in ("includesShots", "includesGoal"):
+        if _c in filtered_phases.columns:
+            ph_cols_src.append(_c)
+    ph_cols_src = [c for c in ph_cols_src if c in filtered_phases.columns]
+    ph_slim = filtered_phases[ph_cols_src].copy()
+    ph_slim["_gid"]    = ph_slim["game_id"].astype(str) if "game_id" in ph_slim.columns else ""
+    ph_slim["_pid"]    = ph_slim["phase_id"].astype(str)
+    ph_slim["_period"] = ph_slim["periodId"].astype(str)
+    ph_slim["_team"]   = ph_slim["possessionContestantId"].astype(str)
+    ph_slim["_psf"]    = ph_slim["startFrame"].astype(int)
+    ph_slim["_pef"]    = ph_slim["endFrame"].astype(int)
+    for _c in ("includesShots", "includesGoal"):
         if _c not in ph_slim.columns:
             ph_slim[_c] = ""
     ph_slim = ph_slim.rename(columns={"startTime": "phase_startTime"})
+    ph_keep = ["_gid", "_pid", "_period", "_team", "_psf", "_pef",
+               "phaseLabel", "includesShots", "includesGoal", "phase_startTime"]
+    ph_slim = ph_slim[[c for c in ph_keep if c in ph_slim.columns]]
 
-    ru = runs_df.copy()
-    ru["_gid"]    = ru["game_id"].astype(str) if "game_id" in ru.columns else ""
-    ru["_period"] = ru["periodId"].astype(str)
-    ru["_team"]   = ru["contestantId"].astype(str)
-    ru["_rsf"]    = ru["startFrame"]
-    ru["_ref"]    = ru["endFrame"]
-    ru = ru.dropna(subset=["_rsf", "_ref"])
-    ru["_rsf"]    = ru["_rsf"].astype(int)
-    ru["_ref"]    = ru["_ref"].astype(int)
-    ru["_crid"]   = ru["composite_run_id"] if "composite_run_id" in ru.columns else ru["run_id"]
-
-    run_keep_cols = ["_gid", "_period", "_team", "_rsf", "_ref", "_crid",
-                     "run_id", "game_id", "periodId", "playerId", "contestantId",
+    # Build slim run lookup — select needed columns first, then copy once
+    # NOTE: composite_run_id is NOT included here; it is captured via _crid
+    # which is later renamed back. Including it would create a duplicate column.
+    run_keep_cols = ["run_id", "game_id", "periodId", "playerId", "contestantId",
                      "masterLabel", "runType", "defensiveLineBroken",
                      "dangerous", "expectedThreat_max", "speed_max",
                      "runFollowedByTeamShot", "runFollowedByTeamGoal",
-                     "startTime", "endTime",
+                     "startTime", "endTime", "startFrame", "endFrame",
                      "startX", "startY", "endX", "endY"]
-    run_keep_cols = [c for c in run_keep_cols if c in ru.columns]
-    ru_slim = ru[run_keep_cols].copy()
+    run_keep_cols = [c for c in run_keep_cols if c in runs_df.columns]
+    ru_slim = runs_df[run_keep_cols].copy()
+    ru_slim["_gid"]    = ru_slim["game_id"].astype(str) if "game_id" in ru_slim.columns else ""
+    ru_slim["_period"] = ru_slim["periodId"].astype(str)
+    ru_slim["_team"]   = ru_slim["contestantId"].astype(str)
+    ru_slim["_rsf"]    = ru_slim["startFrame"]
+    ru_slim["_ref"]    = ru_slim["endFrame"]
+    ru_slim = ru_slim.dropna(subset=["_rsf", "_ref"])
+    ru_slim["_rsf"]    = ru_slim["_rsf"].astype(int)
+    ru_slim["_ref"]    = ru_slim["_ref"].astype(int)
+    ru_slim["_crid"]   = (runs_df.loc[ru_slim.index, "composite_run_id"] if "composite_run_id" in runs_df.columns else ru_slim["run_id"]).astype(str)
 
     if "runType" in ru_slim.columns:
-        ru_inp   = ru_slim[ru_slim["runType"] == "inPossession"].copy()
-        ru_oop   = ru_slim[ru_slim["runType"] == "outOfPossession"].copy()
-        ru_other = ru_slim[~ru_slim["runType"].isin(["inPossession", "outOfPossession"])].copy()
+        _is_inp = ru_slim["runType"] == "inPossession"
+        _is_oop = ru_slim["runType"] == "outOfPossession"
+        ru_inp   = ru_slim[_is_inp]
+        ru_oop   = ru_slim[_is_oop]
+        ru_other = ru_slim[~(_is_inp | _is_oop)]
     else:
-        ru_inp   = ru_slim.copy()
-        ru_oop   = pd.DataFrame(columns=ru_slim.columns)
-        ru_other = pd.DataFrame(columns=ru_slim.columns)
+        ru_inp   = ru_slim
+        ru_oop   = ru_slim.iloc[0:0]
+        ru_other = ru_slim.iloc[0:0]
 
     merged_inp = ru_inp.merge(ph_slim, left_on=["_gid", "_period", "_team"], right_on=["_gid", "_period", "_team"], how="inner")
 
@@ -109,14 +119,20 @@ def compute_runs_result(
         merged_oop = merged_oop[merged_oop["_team"] != merged_oop["_ph_team"]]
         merged_oop = merged_oop.drop(columns=["_ph_team"], errors="ignore")
     else:
-        merged_oop = pd.DataFrame(columns=merged_inp.columns if not merged_inp.empty else [])
+        merged_oop = pd.DataFrame()
 
     if not ru_other.empty:
         merged_other = ru_other.merge(ph_slim, left_on=["_gid", "_period", "_team"], right_on=["_gid", "_period", "_team"], how="inner")
     else:
-        merged_other = pd.DataFrame(columns=merged_inp.columns if not merged_inp.empty else [])
+        merged_other = pd.DataFrame()
 
-    merged = pd.concat([merged_inp, merged_oop, merged_other], ignore_index=True)
+    # Only concat non-empty frames — concatenating empty DataFrames with category
+    # dtype columns causes pandas to produce corrupted dtypes (multi-dimensional
+    # groupers) that break groupby even when the column being grouped is object.
+    frames_to_concat = [f for f in [merged_inp, merged_oop, merged_other] if not f.empty]
+    if not frames_to_concat:
+        return pd.DataFrame()
+    merged = pd.concat(frames_to_concat, ignore_index=True)
     if not merged.empty:
         overlap = (merged["_rsf"] < merged["_pef"]) & (merged["_ref"] > merged["_psf"])
         merged = merged[overlap]
@@ -181,6 +197,15 @@ def compute_runs_result(
             result_df = result_df[result_df["playerId"].isin(matching_pids)]
 
     if not result_df.empty:
+        # Category columns with unused levels (left over from merge / filter)
+        # cause pandas groupby to raise "Grouper not 1-dimensional".
+        # Convert every category column back to plain object before grouping.
+        _cat_cols = [c for c, dt in result_df.dtypes.items() if dt.name == "category"]
+        if _cat_cols:
+            result_df = result_df.copy()
+            for _cc in _cat_cols:
+                result_df[_cc] = result_df[_cc].astype(object)
+
         phase_cols_set = {"phase_id", "phaseLabel", "phase_startTime", "includesShots", "includesGoal"}
         def _join_unique(x):
             return ", ".join(sorted({str(v) for v in x if pd.notna(v) and str(v) != "nan"}))
@@ -229,8 +254,8 @@ def analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, match
         _et_same = True
 
     with st.expander("🔍 Filters", expanded=True):
-        ftab_run, ftab_phase, ftab_coords, ftab_team, ftab_outcomes = st.tabs(
-            ["🏃 Run Criteria", "📋 Phase Criteria", "📍 Run Coordinates", "👥 Team / Player", "🎯 Attacking Outcomes"]
+        ftab_run, ftab_phase, ftab_coords, ftab_outcomes, ftab_team = st.tabs(
+            ["🏃 Run Criteria", "📋 Phase Criteria", "📍 Run Coordinates", "🎯 Attacking Outcomes", "👥 Team / Player"]
         )
 
         with ftab_phase:

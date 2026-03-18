@@ -76,7 +76,7 @@ def analysis_block_analysis(phases_df: pd.DataFrame, match_info: dict) -> None:
     st.subheader("🧱 Block Analysis")
 
     # ── Filter to Build Up phases only ───────────────────────────────────
-    build_up_df = phases_df[phases_df["phaseLabel"].isin(BLOCK_LABELS)].copy()
+    build_up_df = phases_df[phases_df["phaseLabel"].isin(BLOCK_LABELS)]
 
     if build_up_df.empty:
         st.warning("No Build Up phases found in the loaded data.")
@@ -87,6 +87,9 @@ def analysis_block_analysis(phases_df: pd.DataFrame, match_info: dict) -> None:
         phases_df["possessionContestantId"].dropna().unique()
         if "possessionContestantId" in phases_df.columns else []
     )
+
+    # Copy only when we need to mutate
+    build_up_df = build_up_df.copy()
 
     # Add possessing team name
     if "team_name" not in build_up_df.columns and contestant_map:
@@ -164,12 +167,13 @@ def analysis_block_analysis(phases_df: pd.DataFrame, match_info: dict) -> None:
             )
 
         # ── Game State filter ─────────────────────────────────────────────
+        gs_range_val = None
         if has_game_state:
             gs_col = "_gs_deployed" if view_choice == "Block Deployed" else "_gs_faced"
             gs_min = int(build_up_df[gs_col].min())
             gs_max = int(build_up_df[gs_col].max())
             if gs_min < gs_max:
-                gs_range = st.slider(
+                gs_range_val = st.slider(
                     "**Game State** (goal difference from selected team's perspective)",
                     min_value=gs_min,
                     max_value=gs_max,
@@ -177,14 +181,38 @@ def analysis_block_analysis(phases_df: pd.DataFrame, match_info: dict) -> None:
                     step=1,
                     key="ba_game_state",
                 )
-                build_up_df = build_up_df[
-                    (build_up_df[gs_col] >= gs_range[0]) & (build_up_df[gs_col] <= gs_range[1])
-                ]
-                if build_up_df.empty:
-                    st.warning("No Build Up phases match the selected game state range.")
-                    return
             else:
                 st.caption(f"Game State: all phases at **{gs_min}**")
+
+    # ── Generate Outputs button ────────────────────────────────────────────
+    if st.button("▶ Generate Outputs", type="primary", key="ba_generate"):
+        st.session_state["ba_committed"] = {
+            "view_choice": view_choice,
+            "metric_choice": metric_choice,
+            "chart_type": chart_type,
+            "gs_range": gs_range_val,
+        }
+
+    ba_committed = st.session_state.get("ba_committed")
+    if not ba_committed:
+        st.info("Set your filters above and click **▶ Generate Outputs** to run the analysis.")
+        return
+
+    # Use committed values
+    view_choice = ba_committed["view_choice"]
+    metric_choice = ba_committed["metric_choice"]
+    chart_type = ba_committed["chart_type"]
+    gs_range_committed = ba_committed.get("gs_range")
+
+    # Apply game state filter from committed values
+    if gs_range_committed is not None and has_game_state:
+        gs_col = "_gs_deployed" if view_choice == "Block Deployed" else "_gs_faced"
+        build_up_df = build_up_df[
+            (build_up_df[gs_col] >= gs_range_committed[0]) & (build_up_df[gs_col] <= gs_range_committed[1])
+        ]
+        if build_up_df.empty:
+            st.warning("No Build Up phases match the selected game state range.")
+            return
 
     use_duration = metric_choice == "Time (seconds)" and has_duration
 

@@ -16,6 +16,7 @@ from src.sidebar import sidebar_upload_mode, sidebar_local_mode
 from src.tab_runs import analysis_runs_by_phase
 from src.tab_phases import analysis_phase_analysis
 from src.tab_blocks import analysis_block_analysis
+from src.tab_compactness import analysis_team_compactness
 
 
 def main():
@@ -67,12 +68,20 @@ def main():
     squad_map: dict[str, str] = st.session_state.get("squad_map", {})
     jersey_map: dict[str, str] = st.session_state.get("jersey_map", {})
 
-    tab_runs, tab_analysis, tab_block = st.tabs(
-        ["Runs Search", "Phase Analysis", "Block Analysis"]
-    )
+    # ── Lazy tab rendering: only the selected tab's function runs ─────────
+    _TAB_NAMES = ["Runs Search", "Phase Analysis", "Block Analysis", "Team Compactness"]
+    _has_runs = runs_df is not None and not runs_df.empty
+
+    tab_runs, tab_analysis, tab_block, tab_compact = st.tabs(_TAB_NAMES)
+
+    # Track which tab the user has interacted with via committed state
+    # so we only run heavy computation for tabs that have been "generated".
+    # The @st.fragment decorator already isolates reruns per-tab, but
+    # we still render all 4 fragment shells.  This is fine for lightweight
+    # filter widgets; heavy work is gated behind "Generate Outputs".
 
     with tab_runs:
-        if runs_df is None or runs_df.empty:
+        if not _has_runs:
             st.info("No run data available for the loaded game(s).")
         else:
             analysis_runs_by_phase(phases_df, runs_df, match_info, squad_map, jersey_map)
@@ -82,6 +91,9 @@ def main():
 
     with tab_block:
         analysis_block_analysis(phases_df, match_info)
+
+    with tab_compact:
+        analysis_team_compactness(phases_df, match_info)
 
 
 if __name__ == "__main__":

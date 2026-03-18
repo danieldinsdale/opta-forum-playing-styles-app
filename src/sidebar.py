@@ -1,5 +1,6 @@
 """Sidebar UI - upload and local data loading modes."""
 from __future__ import annotations
+import gc
 import json, zipfile
 from io import BytesIO
 import pandas as pd
@@ -137,6 +138,14 @@ def sidebar_upload_mode() -> None:
     st.session_state["loaded_game_ids"] = loaded_labels
     st.session_state.pop("runs_committed", None)
     st.session_state.pop("pa_committed", None)
+    st.session_state.pop("ba_committed", None)
+    st.session_state.pop("tc_committed", None)
+
+    # Free the large ZIP bytes from memory now that games are loaded
+    st.session_state.pop("_zip_zf_bytes", None)
+    st.session_state.pop("_zip_squad_bytes", None)
+    gc.collect()
+
     st.success(f"Loaded {len(merged_phases):,} phases and {len(merged_runs):,} runs from {len(loaded_labels)} game(s).")
 
 
@@ -206,6 +215,9 @@ def sidebar_local_mode() -> None:
             st.session_state["loaded_game_ids"] = selected_ids
             st.session_state.pop("runs_committed", None)
             st.session_state.pop("pa_committed", None)
+            st.session_state.pop("ba_committed", None)
+            st.session_state.pop("tc_committed", None)
+            gc.collect()
             st.success(f"Loaded {len(merged_phases):,} phases and {len(merged_runs):,} runs from {len(selected_ids)} game(s).")
         else:
             st.error("No data could be loaded from the selected games.")

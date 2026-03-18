@@ -56,7 +56,7 @@ def peek_description_from_bytes(data_bytes):
         return ""
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=5)
 def load_squad_map(competition_id):
     p = FEEDS_BASE / competition_id / "squad_lists.json"
     if not p.exists():
@@ -68,7 +68,7 @@ def load_squad_map(competition_id):
         return {}
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=5)
 def load_jersey_map(competition_id):
     p = FEEDS_BASE / competition_id / "squad_lists.json"
     if not p.exists():
@@ -80,7 +80,7 @@ def load_jersey_map(competition_id):
         return {}
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=5)
 def load_team_squad_map(competition_id):
     p = FEEDS_BASE / competition_id / "squad_lists.json"
     if not p.exists():

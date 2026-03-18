@@ -34,8 +34,8 @@ def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map
     _available_pa_team_names = sorted(_pa_cid_by_name.keys())
 
     with st.expander("🔍 Filters", expanded=True):
-        pa_ftab_labels, pa_ftab_coords, pa_ftab_counts, pa_ftab_outcomes, pa_ftab_team = st.tabs(
-            ["🏷️ Phase Labels", "📍 Coordinates", "⚡ Action Counts", "🎯 Attacking Outcomes", "👥 Team / Player"]
+        pa_ftab_labels, pa_ftab_coords, pa_ftab_counts, pa_ftab_outcomes, pa_ftab_compact, pa_ftab_team = st.tabs(
+            ["🏷️ Phase Labels", "📍 Coordinates", "⚡ Action Counts", "🎯 Attacking Outcomes", "📏 Compactness", "👥 Team / Player"]
         )
 
         with pa_ftab_labels:
@@ -219,6 +219,63 @@ def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map
                 else:
                     pa_selected_initiators = []
 
+        with pa_ftab_compact:
+            # ── 1. Defensive Compactness Label ────────────────────────────
+            _mcdc_col = "mostCommonDefensiveCompactness"
+            pa_compact_labels: list[str] = []
+            if _mcdc_col in phases_df.columns:
+                _mcdc_opts = sorted(phases_df[_mcdc_col].dropna().astype(str).unique())
+                if _mcdc_opts:
+                    st.markdown("**Most Common Defensive Compactness**")
+                    pa_compact_labels = st.multiselect(
+                        "Selection (empty = all)",
+                        options=_mcdc_opts,
+                        default=[],
+                        key="pa_compact_labels",
+                    )
+
+            st.markdown("---")
+
+            # ── 2. Attacking Team compactness sliders ────────────────────
+            st.markdown("**Attacking Team Compactness**")
+            _atk_compact_cols = [
+                ("averageAttackingTeamHorizontalWidth",    "Horizontal Width (m)",        "pa_atk_width",  68.0),
+                ("averageAttackingTeamVerticalLength",     "Vertical Length (m)",         "pa_atk_length", 105.0),
+                ("averageAttackingTeamHeightLastDefender", "Height of Last Defender (m)", "pa_atk_height", 105.0),
+            ]
+            pa_atk_compact_ranges: dict[str, tuple[float, float]] = {}
+            atk_cols = st.columns(3)
+            for idx, (col, lbl, key, _max) in enumerate(_atk_compact_cols):
+                if col in phases_df.columns and phases_df[col].notna().any():
+                    with atk_cols[idx]:
+                        _sel = st.slider(lbl, min_value=0.0, max_value=_max,
+                                         value=(0.0, _max), step=0.1,
+                                         format="%.1f", key=f"{key}_slider")
+                        pa_atk_compact_ranges[col] = (float(_sel[0]), float(_sel[1]))
+                        if _sel[1] >= _max:
+                            st.caption(f"Max: >{_max:.0f}")
+
+            st.markdown("---")
+
+            # ── 3. Defending Team compactness sliders ────────────────────
+            st.markdown("**Defending Team Compactness**")
+            _def_compact_cols = [
+                ("averageDefendingTeamHorizontalWidth",    "Horizontal Width (m)",        "pa_def_width",  68.0),
+                ("averageDefendingTeamVerticalLength",     "Vertical Length (m)",         "pa_def_length", 105.0),
+                ("averageDefendingTeamHeightLastDefender", "Height of Last Defender (m)", "pa_def_height", 105.0),
+            ]
+            pa_def_compact_ranges: dict[str, tuple[float, float]] = {}
+            def_cols = st.columns(3)
+            for idx, (col, lbl, key, _max) in enumerate(_def_compact_cols):
+                if col in phases_df.columns and phases_df[col].notna().any():
+                    with def_cols[idx]:
+                        _sel = st.slider(lbl, min_value=0.0, max_value=_max,
+                                         value=(0.0, _max), step=0.1,
+                                         format="%.1f", key=f"{key}_slider")
+                        pa_def_compact_ranges[col] = (float(_sel[0]), float(_sel[1]))
+                        if _sel[1] >= _max:
+                            st.caption(f"Max: >{_max:.0f}")
+
     # ── Generate Outputs button ───────────────────────────────────────────
     if st.button("▶ Generate Outputs", type="primary", key="pa_generate"):
         st.session_state["pa_committed"] = {
@@ -232,6 +289,9 @@ def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map
             "bool_choices":         pa_bool_choices,
             "overload_types":       pa_overload_types,
             "selected_team_name":   pa_selected_team_name,
+            "compact_labels":       pa_compact_labels,
+            "atk_compact_ranges":   pa_atk_compact_ranges,
+            "def_compact_ranges":   pa_def_compact_ranges,
         }
 
     pa_committed = st.session_state.get("pa_committed")
@@ -250,12 +310,15 @@ def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map
     pa_bool_choices        = pa_committed["bool_choices"]
     pa_overload_types      = pa_committed.get("overload_types", [])
     pa_selected_team_name  = pa_committed["selected_team_name"]
+    pa_compact_labels      = pa_committed.get("compact_labels", [])
+    pa_atk_compact_ranges  = pa_committed.get("atk_compact_ranges", {})
+    pa_def_compact_ranges  = pa_committed.get("def_compact_ranges", {})
 
     # ── Apply filters ─────────────────────────────────────────────────────
     pa_sequence_mode = pa_label_mode == "Leads to (sequence)"
 
     if not pa_sequence_mode:
-        filtered = phases_df.copy()
+        filtered = phases_df
         if pa_selected_labels:
             filtered = filtered[filtered["phaseLabel"].isin(pa_selected_labels)]
         if pa_selected_initiators:
@@ -380,6 +443,38 @@ def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map
     if pa_selected_team_name != "All teams":
         pa_selected_cid = _pa_cid_by_name.get(pa_selected_team_name, "")
         filtered = filtered[filtered["possessionContestantId"] == pa_selected_cid]
+
+    # ── Apply Compactness filters ─────────────────────────────────────────────
+    _mcdc_col = "mostCommonDefensiveCompactness"
+    if pa_compact_labels and _mcdc_col in filtered.columns:
+        filtered = filtered[filtered[_mcdc_col].astype(str).isin(pa_compact_labels)]
+
+    # Sentinel max values per column — when selected max equals these, no upper bound is applied
+    _compact_col_max = {
+        "averageAttackingTeamHorizontalWidth":    68.0,
+        "averageDefendingTeamHorizontalWidth":    68.0,
+        "averageAttackingTeamVerticalLength":     105.0,
+        "averageDefendingTeamVerticalLength":     105.0,
+        "averageAttackingTeamHeightLastDefender": 105.0,
+        "averageDefendingTeamHeightLastDefender": 105.0,
+    }
+
+    for compact_ranges in (pa_atk_compact_ranges, pa_def_compact_ranges):
+        for col, (v_min, v_max) in compact_ranges.items():
+            if col not in filtered.columns:
+                continue
+            _sentinel = _compact_col_max.get(col, 100.0)
+            _at_default_min = (v_min == 0.0)
+            _at_default_max = (v_max >= _sentinel)
+            if _at_default_min and _at_default_max:
+                continue  # slider untouched — no filter
+            col_vals = filtered[col].astype(float)
+            mask = filtered[col].notna()
+            if not _at_default_min:
+                mask = mask & (col_vals >= v_min)
+            if not _at_default_max:
+                mask = mask & (col_vals <= v_max)
+            filtered = filtered[mask]
 
     # ── Results ───────────────────────────────────────────────────────────
     st.markdown("---")
