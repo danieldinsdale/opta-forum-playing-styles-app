@@ -61,11 +61,13 @@ def block_chart(
     fig.update_traces(texttemplate=text_fmt, textposition="inside")
     fig.update_layout(
         plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
-        font={"color": "#f0f0f0"},
+        font={"color": "#f0f0f0", "family": "Barlow"},
         legend={"title": {"text": "Block Type"}, "bgcolor": "rgba(0,0,0,0.5)"},
         xaxis={"title": "Team", "color": "#f0f0f0", "gridcolor": "#222"},
         yaxis={"title": y_label, "color": "#f0f0f0", "gridcolor": "#222"},
         margin={"l": 10, "r": 20, "t": 40, "b": 10},
+        hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
+                    "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}},
     )
     st.plotly_chart(fig, use_container_width=True, key=chart_key)
 

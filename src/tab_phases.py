@@ -807,7 +807,16 @@ def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map
                     height=max(300, len(top_display) * 36 + 80),
                     category_orders={display_col: list(reversed(top_display))},
                 )
-                fig.update_layout(barmode="stack", margin={"l": 10, "r": 50, "t": 50 if chart_title else 30, "b": 10}, yaxis={"automargin": True})
+                fig.update_layout(
+                    barmode="stack",
+                    margin={"l": 10, "r": 50, "t": 50 if chart_title else 30, "b": 10},
+                    yaxis={"automargin": True, "color": "#f0f0f0", "gridcolor": "#222"},
+                    xaxis={"color": "#f0f0f0", "gridcolor": "#222"},
+                    plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
+                    font={"color": "#f0f0f0", "family": "Barlow"},
+                    hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
+                                "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}},
+                )
             else:
                 plot_df = agg_df.head(int(top_n)).iloc[::-1].reset_index(drop=True)
                 fig = px.bar(
@@ -819,11 +828,17 @@ def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map
                     labels={bar_metric_col: bar_metric_label, display_col: group_by_label},
                     title=chart_title if chart_title else None,
                     height=max(300, len(plot_df) * 36 + 80),
+                    color_discrete_sequence=[BRAND_AMBER],
                 )
                 fig.update_traces(textposition="outside")
                 fig.update_layout(
                     margin={"l": 10, "r": 50, "t": 50 if chart_title else 30, "b": 10},
-                    yaxis={"automargin": True},
+                    yaxis={"automargin": True, "color": "#f0f0f0", "gridcolor": "#222"},
+                    xaxis={"color": "#f0f0f0", "gridcolor": "#222"},
+                    plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
+                    font={"color": "#f0f0f0", "family": "Barlow"},
+                    hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
+                                "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}},
                 )
             st.plotly_chart(fig, use_container_width=True, key="pa_agg_bar")
 

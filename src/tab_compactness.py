@@ -255,10 +255,12 @@ def _render_dimensions_chart(
         barmode="group",
         title={"text": title, "font": {"size": 15, "color": "#f0f0f0"}, "x": 0.5},
         plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
-        font={"color": "#f0f0f0"}, legend={"bgcolor": "rgba(0,0,0,0.5)"},
+        font={"color": "#f0f0f0", "family": "Barlow"}, legend={"bgcolor": "rgba(0,0,0,0.5)"},
         xaxis={"title": "Team", "color": "#f0f0f0", "gridcolor": "#222"},
         yaxis={"title": "Metres", "color": "#f0f0f0", "gridcolor": "#222"},
         margin={"l": 10, "r": 20, "t": 50, "b": 10}, height=420,
+        hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
+                    "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}},
     )
     st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
@@ -282,10 +284,12 @@ def _render_area_chart(
     fig.update_layout(
         title={"text": title, "font": {"size": 15, "color": "#f0f0f0"}, "x": 0.5},
         plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
-        font={"color": "#f0f0f0"}, legend={"bgcolor": "rgba(0,0,0,0.5)"},
+        font={"color": "#f0f0f0", "family": "Barlow"}, legend={"bgcolor": "rgba(0,0,0,0.5)"},
         xaxis={"title": "Team", "color": "#f0f0f0", "gridcolor": "#222"},
         yaxis={"title": "Area (m²)", "color": "#f0f0f0", "gridcolor": "#222"},
         margin={"l": 10, "r": 20, "t": 50, "b": 10}, height=420,
+        hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
+                    "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}},
     )
     st.plotly_chart(fig, use_container_width=True, key=chart_key)
 

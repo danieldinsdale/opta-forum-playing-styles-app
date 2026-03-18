@@ -159,11 +159,12 @@ def render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map: 
             x=grp["startX"], y=grp["startY"], mode="markers", name=str(label),
             marker={"color": colour, "size": 9, "line": {"color": "white", "width": 1}},
             customdata=grp[custom_cols].values, hovertemplate=hover_tmpl,
-            hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": "#9E07AE", "font": {"size": 12}},
+            hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER, "font": {"size": 12, "family": "Barlow"}},
         ))
 
     fig.update_layout(
         height=700, plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
+        font={"color": "#f0f0f0", "family": "Barlow"},
         margin={"l": 10, "r": 10, "t": 60, "b": 10},
         xaxis={"range": [-4, 104], "showgrid": False, "zeroline": False,
                "showticklabels": False, "scaleanchor": "y", "scaleratio": 105 / 68},
@@ -171,8 +172,8 @@ def render_runs_pitch_map(result_df: pd.DataFrame, match_info: dict, squad_map: 
         showlegend=colour_by_team,
         legend={"x": 0.01, "y": 0.99, "bgcolor": "rgba(0,0,0,0.6)", "font": {"color": "#f0f0f0"}},
         title={"text": f"{len(plot_df)} run(s) plotted", "font": {"size": 13, "color": "#f0f0f0"}, "x": 0.5},
-        hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": "#9E07AE",
-                    "font": {"size": 12, "color": "#f0f0f0"}, "align": "left", "namelength": 0},
+        hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
+                    "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}, "align": "left", "namelength": 0},
         hovermode="closest",
     )
     st.plotly_chart(fig, use_container_width=True, key="runs_pitch_map")

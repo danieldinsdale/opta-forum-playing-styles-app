@@ -69,7 +69,7 @@ def main():
     jersey_map: dict[str, str] = st.session_state.get("jersey_map", {})
 
     # ── Lazy tab rendering: only the selected tab's function runs ─────────
-    _TAB_NAMES = ["Runs Search", "Phase Analysis", "Block Analysis", "Team Compactness"]
+    _TAB_NAMES = ["Runs Analysis", "Phase Analysis", "Block Analysis", "Team Compactness"]
     _has_runs = runs_df is not None and not runs_df.empty
 
     tab_runs, tab_analysis, tab_block, tab_compact = st.tabs(_TAB_NAMES)

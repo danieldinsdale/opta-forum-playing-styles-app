@@ -109,17 +109,25 @@ input, textarea, select, [data-testid="stTextInput"] input, [data-testid="stNumb
 [data-baseweb="popover"] [role="listbox"], [data-baseweb="popover"] ul,
 [data-baseweb="popover"] li {{ background-color: #1a1a1a !important; color: #f0f0f0 !important; }}
 [data-baseweb="popover"] li:hover {{ background-color: #333333 !important; }}
-[data-testid="stDataFrame"], [data-testid="stDataFrame"] iframe, .stDataFrame {{ background-color: #0d0d0d !important; }}
+[data-testid="stDataFrame"], [data-testid="stDataFrame"] iframe, .stDataFrame {{
+    background-color: #0d0d0d !important; border-top: 2px solid {BRAND_AMBER} !important; border-radius: 6px !important;
+}}
 .stTabs [data-baseweb="tab-list"] {{ background-color: #000000 !important; border-bottom: 1px solid #2a2a2a !important; }}
-.stTabs [data-baseweb="tab"] {{ color: #aaaaaa !important; }}
+.stTabs [data-baseweb="tab"] {{ color: #bbbbbb !important; }}
 .stTabs [aria-selected="true"] {{ color: {BRAND_AMBER} !important; border-bottom-color: {BRAND_AMBER} !important; }}
 .stButton > button[kind="primary"] {{ background-color: {BRAND_PURPLE} !important; border-color: {BRAND_PURPLE} !important; color: #ffffff !important; }}
 .stButton > button[kind="primary"]:hover {{ background-color: {BRAND_ORANGE} !important; border-color: {BRAND_ORANGE} !important; }}
 .stButton > button[kind="secondary"] {{ background-color: #1a1a1a !important; border-color: #444444 !important; color: #f0f0f0 !important; }}
 .stButton > button[kind="secondary"]:hover {{ border-color: {BRAND_AMBER} !important; color: {BRAND_AMBER} !important; }}
-[data-testid="stAlert"] {{ background-color: #1a1a1a !important; border-radius: 6px !important; }}
-[data-testid="stMetric"] {{ background-color: #0d0d0d !important; border-radius: 6px !important; padding: 8px !important; }}
+[data-testid="stAlert"] {{ background-color: #1a1a1a !important; border-radius: 6px !important; border-left: 4px solid {BRAND_AMBER} !important; }}
+[data-testid="stAlert"]:has([data-testid="stNotificationContentWarning"]) {{ border-left-color: {BRAND_ORANGE} !important; }}
+[data-testid="stAlert"]:has([data-testid="stNotificationContentError"]) {{ border-left-color: {BRAND_RED} !important; }}
+[data-testid="stMetric"] {{
+    background-color: #0d0d0d !important; border-radius: 6px !important;
+    padding: 8px !important; border-left: 3px solid {BRAND_AMBER} !important;
+}}
 .stProgress > div > div > div {{ background-color: {BRAND_PURPLE} !important; }}
+.stSpinner > div {{ border-top-color: {BRAND_AMBER} !important; }}
 ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
 ::-webkit-scrollbar-track {{ background: #000000; }}
 ::-webkit-scrollbar-thumb {{ background: #333333; border-radius: 3px; }}

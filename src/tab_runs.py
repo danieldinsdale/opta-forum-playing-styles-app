@@ -12,6 +12,7 @@ import streamlit.components.v1 as components
 from src.vod import get_vod_api_key, get_vod_streaming
 from src.pitch import render_runs_pitch_map, pitch_zone_selector
 from src.utils import ms_to_mmss
+from src.config import BRAND_AMBER
 
 
 @st.cache_data(show_spinner="Searching runs…", max_entries=3)
@@ -490,8 +491,22 @@ def analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, match
             st.dataframe(display_agg[show_cols].rename(columns=rename_map).reset_index(drop=True), use_container_width=True, height=min(600, max(120, len(display_agg) * 38 + 40)))
         else:
             plot_df_agg = display_agg.iloc[::-1].reset_index(drop=True)
-            fig = px.bar(plot_df_agg, x="total_runs", y=display_label_col, orientation="h", text="total_runs", labels={"total_runs": "Total Runs", display_label_col: group_by}, height=max(300, len(plot_df_agg) * 36 + 80))
+            fig = px.bar(
+                plot_df_agg, x="total_runs", y=display_label_col, orientation="h",
+                text="total_runs",
+                labels={"total_runs": "Total Runs", display_label_col: group_by},
+                height=max(300, len(plot_df_agg) * 36 + 80),
+                color_discrete_sequence=[BRAND_AMBER],
+            )
             fig.update_traces(textposition="outside")
-            fig.update_layout(margin={"l": 10, "r": 40, "t": 30, "b": 10}, yaxis={"automargin": True})
+            fig.update_layout(
+                margin={"l": 10, "r": 40, "t": 30, "b": 10},
+                yaxis={"automargin": True, "color": "#f0f0f0", "gridcolor": "#222"},
+                xaxis={"color": "#f0f0f0", "gridcolor": "#222"},
+                plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
+                font={"color": "#f0f0f0", "family": "Barlow"},
+                hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
+                            "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}},
+            )
             st.plotly_chart(fig, use_container_width=True, key="runs_agg_bar")
 
