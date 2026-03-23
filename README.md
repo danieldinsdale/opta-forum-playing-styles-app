@@ -1,4 +1,4 @@
-# Phases of Play – Feed Analysis
+# Playing Styles – Opta Forum Feed Analysis
 
 Streamlit application for exploring **Phases of Play** and **Player Runs** data feeds for the Opta Forum 2026
 
