@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from src.config import FEEDS_BASE, COMPETITION_DIRS
-from src.parsers import parse_phases_json, parse_runs_json, compute_game_state
+from src.parsers import parse_phases_json, parse_runs_json, compute_game_state, _optimize_dtypes
 
 
 def discover_available_games(competition_id=None):
@@ -56,7 +56,7 @@ def peek_description_from_bytes(data_bytes):
         return ""
 
 
-@st.cache_data(show_spinner=False, max_entries=5)
+@st.cache_data(show_spinner=False, max_entries=3)
 def load_squad_map(competition_id):
     p = FEEDS_BASE / competition_id / "squad_lists.json"
     if not p.exists():
@@ -68,7 +68,7 @@ def load_squad_map(competition_id):
         return {}
 
 
-@st.cache_data(show_spinner=False, max_entries=5)
+@st.cache_data(show_spinner=False, max_entries=3)
 def load_jersey_map(competition_id):
     p = FEEDS_BASE / competition_id / "squad_lists.json"
     if not p.exists():
@@ -80,7 +80,7 @@ def load_jersey_map(competition_id):
         return {}
 
 
-@st.cache_data(show_spinner=False, max_entries=5)
+@st.cache_data(show_spinner=False, max_entries=3)
 def load_team_squad_map(competition_id):
     p = FEEDS_BASE / competition_id / "squad_lists.json"
     if not p.exists():
@@ -124,12 +124,35 @@ def parse_squad_jersey_json(data):
     return j
 
 
+# Columns that are never used downstream — drop to save memory
+_PHASE_DROP_COLS = [
+    "firstTouchEventId",
+    "duration_seconds",
+    "distanceTravelledByBall",
+    "distanceProgressedUpField",
+    "numberAttackingPlayersWithTouches",
+    "numberRuns",
+]
+_RUN_DROP_COLS: list[str] = []
+
+
 def _tag_game(df, game_id, desc, is_runs=False):
     if not df.empty:
         df["game_id"] = game_id
         df["match_description"] = desc
         if is_runs:
             df["composite_run_id"] = game_id + "_" + df["run_id"].astype(str)
+
+
+def _trim_and_optimize(df, drop_cols):
+    """Drop unused columns and re-run dtype optimisation (for tagged cols)."""
+    if df.empty:
+        return df
+    existing_drops = [c for c in drop_cols if c in df.columns]
+    if existing_drops:
+        df.drop(columns=existing_drops, inplace=True)
+    _optimize_dtypes(df)
+    return df
 
 
 def load_game(game_meta):
@@ -144,6 +167,8 @@ def load_game(game_meta):
     desc = mi.get("description", gid)
     _tag_game(ph, gid, desc)
     _tag_game(ru, gid, desc, True)
+    _trim_and_optimize(ph, _PHASE_DROP_COLS)
+    _trim_and_optimize(ru, _RUN_DROP_COLS)
     return mi, ph, ru
 
 
@@ -155,6 +180,8 @@ def load_game_from_bytes(phases_bytes, runs_bytes, game_label):
     desc = mi.get("description", game_label)
     _tag_game(ph, gid, desc)
     _tag_game(ru, gid, desc, True)
+    _trim_and_optimize(ph, _PHASE_DROP_COLS)
+    _trim_and_optimize(ru, _RUN_DROP_COLS)
     return mi, ph, ru
 
 

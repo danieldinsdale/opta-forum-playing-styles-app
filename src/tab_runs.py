@@ -15,7 +15,7 @@ from src.utils import ms_to_mmss
 from src.config import BRAND_AMBER
 
 
-@st.cache_data(show_spinner="Searching runs…", max_entries=3)
+@st.cache_data(show_spinner="Searching runs…", max_entries=2, ttl=600)
 def compute_runs_result(
     phases_df: pd.DataFrame,
     runs_df: pd.DataFrame,
@@ -71,8 +71,8 @@ def compute_runs_result(
     ph_slim["_pid"]    = ph_slim["phase_id"].astype(str)
     ph_slim["_period"] = ph_slim["periodId"].astype(str)
     ph_slim["_team"]   = ph_slim["possessionContestantId"].astype(str)
-    ph_slim["_psf"]    = ph_slim["startFrame"].astype(int)
-    ph_slim["_pef"]    = ph_slim["endFrame"].astype(int)
+    ph_slim["_psf"]    = pd.to_numeric(ph_slim["startFrame"], errors="coerce").astype("Int32")
+    ph_slim["_pef"]    = pd.to_numeric(ph_slim["endFrame"], errors="coerce").astype("Int32")
     for _c in ("includesShots", "includesGoal"):
         if _c not in ph_slim.columns:
             ph_slim[_c] = ""
@@ -95,11 +95,11 @@ def compute_runs_result(
     ru_slim["_gid"]    = ru_slim["game_id"].astype(str) if "game_id" in ru_slim.columns else ""
     ru_slim["_period"] = ru_slim["periodId"].astype(str)
     ru_slim["_team"]   = ru_slim["contestantId"].astype(str)
-    ru_slim["_rsf"]    = ru_slim["startFrame"]
-    ru_slim["_ref"]    = ru_slim["endFrame"]
+    ru_slim["_rsf"]    = pd.to_numeric(ru_slim["startFrame"], errors="coerce")
+    ru_slim["_ref"]    = pd.to_numeric(ru_slim["endFrame"], errors="coerce")
     ru_slim = ru_slim.dropna(subset=["_rsf", "_ref"])
-    ru_slim["_rsf"]    = ru_slim["_rsf"].astype(int)
-    ru_slim["_ref"]    = ru_slim["_ref"].astype(int)
+    ru_slim["_rsf"]    = ru_slim["_rsf"].astype("Int32")
+    ru_slim["_ref"]    = ru_slim["_ref"].astype("Int32")
     ru_slim["_crid"]   = (runs_df.loc[ru_slim.index, "composite_run_id"] if "composite_run_id" in runs_df.columns else ru_slim["run_id"]).astype(str)
 
     if "runType" in ru_slim.columns:
@@ -133,7 +133,9 @@ def compute_runs_result(
     frames_to_concat = [f for f in [merged_inp, merged_oop, merged_other] if not f.empty]
     if not frames_to_concat:
         return pd.DataFrame()
-    merged = pd.concat(frames_to_concat, ignore_index=True)
+    merged = pd.concat(frames_to_concat, ignore_index=True, copy=False)
+    # Release individual frames
+    del merged_inp, merged_oop, merged_other, frames_to_concat
     if not merged.empty:
         overlap = (merged["_rsf"] < merged["_pef"]) & (merged["_ref"] > merged["_psf"])
         merged = merged[overlap]
@@ -459,6 +461,82 @@ def analysis_runs_by_phase(phases_df: pd.DataFrame, runs_df: pd.DataFrame, match
 
     elif view_mode == "Pitch map":
         render_runs_pitch_map(result_df, match_info, squad_map)
+
+        # ── Selectable table + video playback below pitch map ─────────────
+        pm_display_cols = ["game_id", "run_id", "phase_id", "periodId", "startTime", "endTime", "masterLabel", "phaseLabel"]
+        if "team_name" in result_df.columns:
+            pm_display_cols.append("team_name")
+        if "player_name" in result_df.columns:
+            pm_display_cols.append("player_name")
+        elif "playerId" in result_df.columns:
+            pm_display_cols.append("playerId")
+        pm_display_cols = [c for c in pm_display_cols if c in result_df.columns]
+
+        pm_result = result_df.copy()
+        if jersey_map and "playerId" in pm_result.columns:
+            pm_result["jersey_number"] = pm_result["playerId"].map(lambda x: jersey_map.get(str(x), "") if pd.notna(x) else "")
+            pm_display_cols.append("jersey_number")
+
+        pm_display_df = pm_result[pm_display_cols].reset_index(drop=True).copy()
+        for _tc in ("startTime", "endTime"):
+            if _tc in pm_display_df.columns:
+                pm_display_df[_tc] = pm_display_df[_tc].apply(ms_to_mmss)
+
+        st.caption("👆 Click a row to select it, then press **▶ Play Video** below.")
+        pm_table_sel = st.dataframe(pm_display_df, use_container_width=True, height=min(400, max(200, len(pm_display_df) * 38)), selection_mode="single-row", on_select="rerun", key="pm_run_table")
+        _pm_sel_rows = pm_table_sel.selection.get("rows", []) if pm_table_sel and pm_table_sel.selection else []
+        pm_selected_idx = int(_pm_sel_rows[0]) if _pm_sel_rows else None
+
+        st.markdown("##### 🎬 Video Playback")
+        if pm_selected_idx is None:
+            st.info("Click a row in the table above to select a run, then press ▶ Play Video.")
+        else:
+            _pm_sel = pm_result.iloc[pm_selected_idx]
+            st.success(f"Selected: run **{_pm_sel.get('run_id', '')}** — **{_pm_sel.get('team_name', _pm_sel.get('contestantId', ''))}** — {_pm_sel.get('player_name', _pm_sel.get('playerId', ''))} — Period {_pm_sel.get('periodId', '')} — {_pm_sel.get('masterLabel', '')}")
+
+        pm_vid_c1, pm_vid_c2 = st.columns(2)
+        with pm_vid_c1:
+            pm_before_buf = st.number_input("Pre-buffer (s)", min_value=0, max_value=10, value=5, step=1, key="pm_vid_pre")
+        with pm_vid_c2:
+            pm_after_buf = st.number_input("Post-buffer (s)", min_value=0, max_value=10, value=5, step=1, key="pm_vid_post")
+
+        if st.button("▶ Play Video", key="pm_play_video", type="primary", disabled=pm_selected_idx is None):
+            _row = pm_result.iloc[pm_selected_idx]
+            _game_id = str(_row.get("game_id", ""))
+            _period_id = int(_row.get("periodId", 1))
+            _start_ms = _row.get("startTime")
+            _end_ms   = _row.get("endTime")
+            if pd.notna(_start_ms) and pd.notna(_end_ms):
+                _time_in  = int(float(_start_ms) / 1000)
+                _time_out = int(float(_end_ms) / 1000)
+            elif pd.notna(_start_ms):
+                _time_in  = int(float(_start_ms) / 1000)
+                _time_out = _time_in
+            else:
+                _sf = _row.get("run_startFrame") or _row.get("startFrame", 0)
+                _ef = _row.get("run_endFrame")   or _row.get("endFrame", _sf)
+                _time_in  = int(float(_sf) / 25)
+                _time_out = int(float(_ef) / 25)
+
+            if not _game_id:
+                st.error("No game_id available for this run.")
+            else:
+                _api_key = get_vod_api_key()
+                if not _api_key:
+                    st.error("VOD API key is not configured. Set the `VOD_API_KEY` environment variable or enter it in the sidebar.")
+                else:
+                    with st.spinner("Fetching video clip…"):
+                        try:
+                            _url = get_vod_streaming(game_uuid=_game_id, period=_period_id, time_in=_time_in, time_out=_time_out, before_time=int(pm_before_buf), after_time=int(pm_after_buf), api_key=_api_key)
+                            components.html(f'<iframe src="{_url}" width="950" height="600" frameborder="0" allowfullscreen></iframe>', height=620)
+                        except requests.exceptions.HTTPError as exc:
+                            st.error(f"VOD API request failed: {exc.response.status_code} {exc.response.reason}")
+                        except requests.exceptions.RequestException:
+                            st.error("Network error fetching video clip. Please try again.")
+                        except (ValueError, KeyError, IndexError) as exc:
+                            st.error(f"Could not retrieve video: {exc}")
+                        except Exception:
+                            st.error("Unexpected error fetching video. Please try again.")
 
     else:
         if group_by == "Team":

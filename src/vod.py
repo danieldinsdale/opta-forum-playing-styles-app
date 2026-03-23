@@ -26,7 +26,7 @@ def get_vod_base_url() -> str:
     )
 
 
-@st.cache_data(ttl=300, show_spinner=False, max_entries=10)
+@st.cache_data(ttl=300, show_spinner=False, max_entries=5)
 def get_vod_streaming(
     game_uuid: str,
     period: int,

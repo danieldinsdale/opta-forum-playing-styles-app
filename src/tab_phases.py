@@ -599,12 +599,13 @@ def analysis_phase_analysis(phases_df: pd.DataFrame, match_info: dict, squad_map
             and filtered["firstTouchPlayerId"].notna().any()
         )
 
-        # Pre-build name columns for player aggregation
-        if squad_map and has_initiator:
+        # Pre-build name columns for player aggregation (single copy)
+        _need_copy = (squad_map and has_initiator) or (squad_map and has_first_touch)
+        if _need_copy:
             filtered = filtered.copy()
+        if squad_map and has_initiator:
             filtered["_initiator_name"] = filtered["initiatorPlayerId"].map(lambda x: squad_map.get(str(x), str(x)) if pd.notna(x) else "")
         if squad_map and has_first_touch:
-            filtered = filtered.copy() if "_initiator_name" not in filtered.columns else filtered
             filtered["_first_touch_name"] = filtered["firstTouchPlayerId"].map(lambda x: squad_map.get(str(x), str(x)) if pd.notna(x) else "")
 
         agg_c1, agg_c2, agg_c3 = st.columns(3)

@@ -17,6 +17,7 @@ from src.tab_runs import analysis_runs_by_phase
 from src.tab_phases import analysis_phase_analysis
 from src.tab_blocks import analysis_block_analysis
 from src.tab_compactness import analysis_team_compactness
+from src.utils import df_memory_mb
 
 
 def main():
@@ -94,6 +95,13 @@ def main():
 
     with tab_compact:
         analysis_team_compactness(phases_df, match_info)
+
+    # ── Memory debug panel (sidebar) ──────────────────────────────────────
+    with st.sidebar:
+        with st.expander("🧠 Memory Usage", expanded=False):
+            _ph_mb = df_memory_mb(phases_df)
+            _ru_mb = df_memory_mb(runs_df)
+            st.caption(f"Phases: {_ph_mb:.1f} MB · Runs: {_ru_mb:.1f} MB · Total: {_ph_mb + _ru_mb:.1f} MB")
 
 
 if __name__ == "__main__":

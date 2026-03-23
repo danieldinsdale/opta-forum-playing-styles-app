@@ -19,16 +19,19 @@ import pandas as pd
 # DataFrame dtype optimiser — called after every parse to shrink memory
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Integer columns that can safely be stored as int32
+# Small-range integer columns → Int16 (range ±32 767)
+_INT16_COLS = frozenset({
+    "game_state",
+})
+
+# Medium-range integer columns → Int32
 _INT32_COLS = frozenset({
     "startTime", "endTime", "startFrame", "endFrame", "phaseDuration",
-    "game_state",
 })
 
 # Float columns that can safely be stored as float32
 _FLOAT32_COLS = frozenset({
     "startX", "startY", "endX", "endY",
-    "duration_seconds",
     "expectedThreat_max", "speed_max",
     "defensiveLineBroken", "dangerous",
     "runFollowedByTeamShot", "runFollowedByTeamGoal",
@@ -39,13 +42,20 @@ _FLOAT32_COLS = frozenset({
     "averageDefensiveAreaCoverage",
     "averageAttackingTeamHeightLastDefender",
     "averageDefendingTeamHeightLastDefender",
+    # phaseSummary count columns (small non-negative ints stored as float)
+    "numberDangerousRuns", "numberLineBreakingActions",
+    "numberPasses", "numberHighPressureOnReceiver",
+    "numberHighPressureOnTouches",
 })
 
 # Low-cardinality string columns → category dtype
 _CATEGORY_COLS = frozenset({
     "phaseLabel", "periodId", "possessionContestantId",
     "runType", "masterLabel", "contestantId", "team_name",
-    "overloadTypes",
+    "overloadTypes", "playerId", "game_id", "match_description",
+    "initiatorPlayerId", "firstTouchPlayerId",
+    "mostCommonDefensiveCompactness",
+    "includesShots", "includesGoal",
 })
 
 
@@ -55,6 +65,14 @@ def _optimize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     returns it for convenience."""
     if df.empty:
         return df
+
+    for col in _INT16_COLS & set(df.columns):
+        if df[col].dtype == object:
+            continue
+        try:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int16")
+        except (ValueError, TypeError):
+            pass
 
     for col in _INT32_COLS & set(df.columns):
         if df[col].dtype == object:
@@ -187,10 +205,6 @@ def parse_phases_xml(file_bytes: bytes) -> tuple[dict, pd.DataFrame]:
     if not phases_df.empty and contestant_map:
         phases_df["team_name"] = phases_df["possessionContestantId"].map(contestant_map)
 
-    if "phaseDuration" in phases_df.columns:
-        phases_df["duration_seconds"] = phases_df["phaseDuration"] / 1000.0
-    else:
-        phases_df["duration_seconds"] = (phases_df["endTime"] - phases_df["startTime"]) / 1000.0
 
     _optimize_dtypes(phases_df)
     return match_info, phases_df
@@ -405,10 +419,6 @@ def parse_phases_json(data: dict) -> tuple[dict, pd.DataFrame]:
     if not phases_df.empty and contestant_map:
         phases_df["team_name"] = phases_df["possessionContestantId"].map(contestant_map)
 
-    if "phaseDuration" in phases_df.columns:
-        phases_df["duration_seconds"] = phases_df["phaseDuration"] / 1000.0
-    elif not phases_df.empty:
-        phases_df["duration_seconds"] = (phases_df["endTime"] - phases_df["startTime"]) / 1000.0
 
     _optimize_dtypes(phases_df)
     return match_info, phases_df

@@ -220,7 +220,7 @@ def _apply_phase_label_filter(
 def _render_dimensions_chart(
     result_df: pd.DataFrame, title: str, chart_key: str
 ) -> None:
-    """Grouped bar chart — Width, Length, and Height of Last Defender per team."""
+    """Grouped horizontal bar chart — Width, Length, and Height of Last Defender per team."""
     if result_df.empty:
         st.info("No data to display.")
         return
@@ -233,42 +233,48 @@ def _render_dimensions_chart(
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=teams, y=result_df["Horizontal Width (m)"],
+        y=teams, x=result_df["Horizontal Width (m)"],
         name="Horizontal Width (m)", marker_color=BRAND_AMBER,
         text=result_df["Horizontal Width (m)"], textposition="outside",
-        texttemplate="%{text:.1f}",
+        texttemplate="%{text:.1f}", orientation="h",
     ))
     fig.add_trace(go.Bar(
-        x=teams, y=result_df["Vertical Length (m)"],
+        y=teams, x=result_df["Vertical Length (m)"],
         name="Vertical Length (m)", marker_color=BRAND_ORANGE,
         text=result_df["Vertical Length (m)"], textposition="outside",
-        texttemplate="%{text:.1f}",
+        texttemplate="%{text:.1f}", orientation="h",
     ))
     if has_height:
         fig.add_trace(go.Bar(
-            x=teams, y=result_df["Height of Last Defender (m)"],
+            y=teams, x=result_df["Height of Last Defender (m)"],
             name="Height of Last Defender (m)", marker_color=BRAND_RED,
             text=result_df["Height of Last Defender (m)"], textposition="outside",
-            texttemplate="%{text:.1f}",
+            texttemplate="%{text:.1f}", orientation="h",
         ))
+    n_teams = len(teams)
+    n_traces = 2 + int(has_height)
+    _height = max(120, n_teams * n_traces * 18 + 80)
     fig.update_layout(
         barmode="group",
+        bargap=0.25, bargroupgap=0.08,
         title={"text": title, "font": {"size": 15, "color": "#f0f0f0"}, "x": 0.5},
         plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
-        font={"color": "#f0f0f0", "family": "Barlow"}, legend={"bgcolor": "rgba(0,0,0,0.5)"},
-        xaxis={"title": "Team", "color": "#f0f0f0", "gridcolor": "#222"},
-        yaxis={"title": "Metres", "color": "#f0f0f0", "gridcolor": "#222"},
-        margin={"l": 10, "r": 20, "t": 50, "b": 10}, height=420,
+        font={"color": "#f0f0f0", "family": "Barlow"}, legend={"bgcolor": "rgba(0,0,0,0.5)", "orientation": "h", "y": -0.15},
+        xaxis={"title": "Metres", "color": "#f0f0f0", "gridcolor": "#222"},
+        yaxis={"title": "", "color": "#f0f0f0", "gridcolor": "#222", "autorange": "reversed"},
+        margin={"l": 10, "r": 80, "t": 50, "b": 60}, height=_height,
         hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
                     "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}},
     )
-    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+    _col, _ = st.columns([2, 1])
+    with _col:
+        st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 
 def _render_area_chart(
     result_df: pd.DataFrame, title: str, chart_key: str
 ) -> None:
-    """Bar chart — Defensive Area Coverage per team."""
+    """Horizontal bar chart — Defensive Area Coverage per team."""
     if result_df.empty or "Area Coverage (m²)" not in result_df.columns:
         st.info("No area coverage data to display.")
         return
@@ -276,22 +282,26 @@ def _render_area_chart(
     teams = result_df["Team"].tolist()
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=teams, y=result_df["Area Coverage (m²)"],
+        y=teams, x=result_df["Area Coverage (m²)"],
         name="Area Coverage (m²)", marker_color=BRAND_RED,
         text=result_df["Area Coverage (m²)"], textposition="outside",
-        texttemplate="%{text:.0f}",
+        texttemplate="%{text:.0f}", orientation="h",
     ))
+    _height = max(100, len(teams) * 24 + 80)
     fig.update_layout(
         title={"text": title, "font": {"size": 15, "color": "#f0f0f0"}, "x": 0.5},
         plot_bgcolor="#0d0d0d", paper_bgcolor="#000000",
+        bargap=0.3,
         font={"color": "#f0f0f0", "family": "Barlow"}, legend={"bgcolor": "rgba(0,0,0,0.5)"},
-        xaxis={"title": "Team", "color": "#f0f0f0", "gridcolor": "#222"},
-        yaxis={"title": "Area (m²)", "color": "#f0f0f0", "gridcolor": "#222"},
-        margin={"l": 10, "r": 20, "t": 50, "b": 10}, height=420,
+        xaxis={"title": "Area (m²)", "color": "#f0f0f0", "gridcolor": "#222"},
+        yaxis={"title": "", "color": "#f0f0f0", "gridcolor": "#222", "autorange": "reversed"},
+        margin={"l": 10, "r": 80, "t": 50, "b": 10}, height=_height,
         hoverlabel={"bgcolor": "#1a1a1a", "bordercolor": BRAND_AMBER,
                     "font": {"size": 12, "color": "#f0f0f0", "family": "Barlow"}},
     )
-    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+    _col, _ = st.columns([2, 1])
+    with _col:
+        st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -324,10 +334,14 @@ def analysis_team_compactness(
     contestant_map: dict[str, str] = match_info.get("contestant_map", {})
     available_labels = sorted(phases_df["phaseLabel"].unique())
 
+    # Derive available team names from the phases data
+    _all_cids = sorted(phases_df["possessionContestantId"].dropna().unique()) if "possessionContestantId" in phases_df.columns else []
+    available_teams = sorted([contestant_map.get(str(c), str(c)) for c in _all_cids])
+
     # ── Filters ───────────────────────────────────────────────────────────
     with st.expander("🔍 Filters", expanded=True):
-        tc_ftab_possession, tc_ftab_labels = st.tabs(
-            ["👁️ Possession State", "🏷️ Phase Labels"]
+        tc_ftab_possession, tc_ftab_labels, tc_ftab_team = st.tabs(
+            ["👁️ Possession State", "🏷️ Phase Labels", "👥 Team"]
         )
 
         with tc_ftab_possession:
@@ -379,6 +393,15 @@ def analysis_team_compactness(
                     )
                 tc_selected_labels = []
 
+        with tc_ftab_team:
+            tc_selected_teams: list[str] = st.multiselect(
+                "Teams",
+                options=available_teams,
+                default=[],
+                key="tc_teams",
+                help="Leave empty to include all teams.",
+            )
+
     # ── Generate Outputs button ────────────────────────────────────────────
     if st.button("▶ Generate Outputs", type="primary", key="tc_generate"):
         st.session_state["tc_committed"] = {
@@ -387,6 +410,7 @@ def analysis_team_compactness(
             "selected_labels": tc_selected_labels,
             "seq_first": tc_seq_first,
             "seq_leads_to": tc_seq_leads_to,
+            "selected_teams": tc_selected_teams,
         }
 
     tc_committed = st.session_state.get("tc_committed")
@@ -400,6 +424,7 @@ def analysis_team_compactness(
     tc_selected_labels = tc_committed["selected_labels"]
     tc_seq_first = tc_committed["seq_first"]
     tc_seq_leads_to = tc_committed["seq_leads_to"]
+    tc_selected_teams = tc_committed.get("selected_teams", [])
 
     # ── Apply phase-label filter ──────────────────────────────────────────
     is_sequence = tc_label_mode == "Leads to (sequence)"
@@ -444,6 +469,16 @@ def analysis_team_compactness(
 
     # Add opponent column (needed for Out of Possession view)
     work_df, opp_col = _add_opponent_column(work_df, phases_df, contestant_map)
+
+    # ── Team filter ───────────────────────────────────────────────────────
+    if tc_selected_teams:
+        if view == "In Possession":
+            work_df = work_df[work_df[team_col].isin(tc_selected_teams)]
+        else:
+            work_df = work_df[work_df[opp_col].isin(tc_selected_teams)]
+        if work_df.empty:
+            st.warning("No phases match the selected team(s).")
+            return
 
     # ── Caption ───────────────────────────────────────────────────────────
     if is_sequence:

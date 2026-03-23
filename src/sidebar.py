@@ -127,8 +127,11 @@ def sidebar_upload_mode() -> None:
         st.error("No data could be loaded from the selected games.")
         return
 
-    merged_phases = pd.concat(all_phases, ignore_index=True)
-    merged_runs = pd.concat(all_runs, ignore_index=True) if all_runs else pd.DataFrame()
+    merged_phases = pd.concat(all_phases, ignore_index=True, copy=False)
+    merged_runs = pd.concat(all_runs, ignore_index=True, copy=False) if all_runs else pd.DataFrame()
+
+    # Release intermediate lists before storing merged frames
+    del all_phases, all_runs
 
     st.session_state["phases_df"] = merged_phases
     st.session_state["runs_df"] = merged_runs
@@ -144,6 +147,11 @@ def sidebar_upload_mode() -> None:
     # Free the large ZIP bytes from memory now that games are loaded
     st.session_state.pop("_zip_zf_bytes", None)
     st.session_state.pop("_zip_squad_bytes", None)
+    st.session_state.pop("_zip_games", None)
+    st.session_state.pop("_zip_game_labels", None)
+
+    # Clear any stale cached computation results
+    st.cache_data.clear()
     gc.collect()
 
     st.success(f"Loaded {len(merged_phases):,} phases and {len(merged_runs):,} runs from {len(loaded_labels)} game(s).")
@@ -205,8 +213,10 @@ def sidebar_local_mode() -> None:
                     st.warning(f"⚠️ Could not load {gid}: {exc}")
 
         if all_phases:
-            merged_phases = pd.concat(all_phases, ignore_index=True)
-            merged_runs = pd.concat(all_runs, ignore_index=True) if all_runs else pd.DataFrame()
+            merged_phases = pd.concat(all_phases, ignore_index=True, copy=False)
+            merged_runs = pd.concat(all_runs, ignore_index=True, copy=False) if all_runs else pd.DataFrame()
+            # Release intermediate lists
+            del all_phases, all_runs
             st.session_state["phases_df"] = merged_phases
             st.session_state["runs_df"] = merged_runs
             st.session_state["match_info"] = {"match_id": "multi-game" if len(selected_ids) > 1 else selected_ids[0], "description": "; ".join(descriptions), "contestant_map": combined_map}
@@ -217,6 +227,8 @@ def sidebar_local_mode() -> None:
             st.session_state.pop("pa_committed", None)
             st.session_state.pop("ba_committed", None)
             st.session_state.pop("tc_committed", None)
+            # Clear stale cached computation results
+            st.cache_data.clear()
             gc.collect()
             st.success(f"Loaded {len(merged_phases):,} phases and {len(merged_runs):,} runs from {len(selected_ids)} game(s).")
         else:
