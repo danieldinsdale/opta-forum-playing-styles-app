@@ -253,7 +253,7 @@ def parse_runs_xml(file_bytes: bytes) -> pd.DataFrame:
         if labels_el is not None:
             for lbl in labels_el.findall("label"):
                 if lbl.get("type") == "master":
-                    row["masterLabel"] = lbl.get("value", "")
+                    row["masterLabel"] = lbl.get("value", "").replace("_", " ").title()
                     break
 
         quals_el = elem.find("qualifiers")
@@ -475,7 +475,7 @@ def parse_runs_json(data: dict) -> pd.DataFrame:
             label_list = [label_list]
         for lbl in label_list:
             if isinstance(lbl, dict) and lbl.get("type") == "master":
-                row["masterLabel"] = lbl.get("value", "")
+                row["masterLabel"] = lbl.get("value", "").replace("_", " ").title()
                 break
 
         quals_obj  = run.get("qualifiers", {})
