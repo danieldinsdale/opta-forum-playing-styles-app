@@ -22,7 +22,7 @@ from src.utils import df_memory_mb
 
 def main():
     st.set_page_config(
-        page_title="Phases of Play – Feed Analysis",
+        page_title="Playing Styles – Feed Analysis",
         layout="wide",
         page_icon=str(LOGO_LIGHT) if LOGO_LIGHT.exists() else "⚽",
     )
