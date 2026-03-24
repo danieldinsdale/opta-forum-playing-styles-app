@@ -138,7 +138,7 @@ input, textarea, select, [data-testid="stTextInput"] input, [data-testid="stNumb
     {logo_html}
     <div>
         <p class="brand-header-sub">Stats Perform · Opta</p>
-        <p class="brand-header-title">Phases of Play – Feed Analysis</p>
+        <p class="brand-header-title">Playing Styles – Feed Analysis</p>
     </div>
 </div>
 """,
